@@ -347,7 +347,7 @@ if __name__ == '__main__':
         help='Blocksize to use for adaptive mask selection.'
     )
     parser.add_argument(
-        '--gmp', action='store_true',
+        '--gmp', action='store_false',
         help='Whether to run the GMP baseline.'
     )
     parser.add_argument(
