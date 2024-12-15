@@ -5,9 +5,9 @@ DEV = torch.device('cuda')
 
 def find_layers(module, layers=[nn.Conv2d, nn.Linear], name=''):
     """ 
-    Recursively searches through a Pytorch nn.Module to find all the layers of a specific type 
+    Recursively searches through a Pytorch nn.Module to find all the layers of a specific type.
 
-    Returns a dictionary mapping the layer names to the layer objects themselves
+    Returns a dictionary mapping the layer names to the layer objects themselves.
     """
     if type(module) in layers:
         return {name: module}
