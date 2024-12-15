@@ -75,4 +75,7 @@ class QJLQuantizer(nn.Module):
 
     def forward(self, k):
         # Apply JL transform: sign(S * k)
-        return torch.sign(self.S @ k.T)  # (S * k) and then apply sign function
+        result = torch.sign(self.S @ k.T)  # (S * k) and then apply sign function
+        
+        # Ensure the result is on the same device as the input tensor
+        return result.to(k.device)
