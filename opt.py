@@ -26,6 +26,114 @@ def get_opt(model):
     model.seqlen = model.config.max_position_embeddings
     return model
 
+# @torch.no_grad()
+# def opt_sequential(model, dataloader, dev):
+#     print('Starting ...')
+
+#     use_cache = model.config.use_cache
+#     model.config.use_cache = False
+#     layers = model.model.decoder.layers
+
+#     model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(dev) 
+#     model.model.decoder.embed_positions = model.model.decoder.embed_positions.to(dev)
+#     if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+#         model.model.decoder.project_out = model.model.decoder.project_out.to(dev) 
+#     if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+#         model.model.decoder.project_in = model.model.decoder.project_in.to(dev) 
+#     layers[0] = layers[0].to(dev)
+
+#     dtype = next(iter(model.parameters())).dtype
+#     inps = torch.zeros(
+#         (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
+#     )
+#     cache = {'i': 0, 'attention_mask': None}
+
+#     class Catcher(nn.Module):
+#         def __init__(self, module):
+#             super().__init__()
+#             self.module = module
+#         def forward(self, inp, **kwargs):
+#             inps[cache['i']] = inp
+#             cache['i'] += 1
+#             cache['attention_mask'] = kwargs['attention_mask']
+#             raise ValueError
+#     layers[0] = Catcher(layers[0])
+#     for batch in dataloader:
+#         try:
+#             model(batch[0].to(dev))
+#         except ValueError:
+#             pass
+#     layers[0] = layers[0].module
+
+#     layers[0] = layers[0].cpu()
+#     model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.cpu()
+#     model.model.decoder.embed_positions = model.model.decoder.embed_positions.cpu()
+#     if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+#         model.model.decoder.project_out = model.model.decoder.project_out.cpu()
+#     if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+#         model.model.decoder.project_in = model.model.decoder.project_in.cpu()
+#     torch.cuda.empty_cache()
+
+#     outs = torch.zeros_like(inps)
+#     attention_mask = cache['attention_mask']
+
+#     print('Ready.')
+
+#     # Define the QJLQuantizer here, which will be used for quantizing the key vectors
+#     input_dim = model.config.hidden_size  # Dimensionality of the key vectors (input size)
+#     output_dim = 32  # Lower-dimensional space after JL transform
+#     qjl_quantizer = QJLQuantizer(input_dim, output_dim).to(dev)
+
+#     for i in range(len(layers)):
+#         layer = layers[i].to(dev)
+
+#         subset = find_layers(layer)
+
+#         gpts = {}
+#         for name in subset:
+#             if (not (args.minlayer <= i < args.maxlayer and args.prune_only in name)) == (not args.invert):
+#                 continue
+#             gpts[name] = SparseGPT(subset[name])
+#             if args.wbits < 16:
+#                 gpts[name].quantizer = Quantizer()
+#                 gpts[name].quantizer.configure(
+#                     args.wbits, perchannel=True, sym=False, mse=False
+#                 )
+
+#         def add_batch(name):
+#             def tmp(_, inp, out):
+#                 gpts[name].add_batch(inp[0].data, out.data)
+#             return tmp
+#         handles = []
+#         for name in gpts:
+#             handles.append(subset[name].register_forward_hook(add_batch(name)))
+#         for j in range(args.nsamples):
+#             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+#         for h in handles:
+#             h.remove()
+
+#         # Replace pruning with JL Quantization logic here
+#         for name in gpts:
+#             print(i, name)
+#             print('Applying JL Transform and Quantization ...')
+            
+#             # Apply the JL quantization instead of pruning here
+#             quantized_k = qjl_quantizer(subset[name].weight.data)  # Quantize the key vectors
+
+#             # Update the weights of the layer using the quantized keys (could be further processed here)
+#             subset[name].weight.data = quantized_k
+
+#         for j in range(args.nsamples):
+#             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+
+#         layers[i] = layer.cpu()
+#         del layer
+#         torch.cuda.empty_cache()
+
+#         inps, outs = outs, inps
+
+#     model.config.use_cache = use_cache
+
 @torch.no_grad()
 def opt_sequential(model, dataloader, dev):
     print('Starting ...')
@@ -46,7 +154,7 @@ def opt_sequential(model, dataloader, dev):
     inps = torch.zeros(
         (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
     )
-    cache = {'i': 0, 'attention_mask': None}
+    cache = {'i': 0, 'attention_mask': None, 'key_norms': [], 'quantized_keys': []}
 
     class Catcher(nn.Module):
         def __init__(self, module):
@@ -65,22 +173,8 @@ def opt_sequential(model, dataloader, dev):
             pass
     layers[0] = layers[0].module
 
-    layers[0] = layers[0].cpu()
-    model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.cpu()
-    model.model.decoder.embed_positions = model.model.decoder.embed_positions.cpu()
-    if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
-        model.model.decoder.project_out = model.model.decoder.project_out.cpu()
-    if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
-        model.model.decoder.project_in = model.model.decoder.project_in.cpu()
-    torch.cuda.empty_cache()
-
-    outs = torch.zeros_like(inps)
-    attention_mask = cache['attention_mask']
-
-    print('Ready.')
-
-    # Define the QJLQuantizer here, which will be used for quantizing the key vectors
-    input_dim = model.config.hidden_size  # Dimensionality of the key vectors (input size)
+    # Initialize the QJL quantizer
+    input_dim = model.config.hidden_size  # Dimensionality of key vectors
     output_dim = 32  # Lower-dimensional space after JL transform
     qjl_quantizer = QJLQuantizer(input_dim, output_dim).to(dev)
 
@@ -89,42 +183,20 @@ def opt_sequential(model, dataloader, dev):
 
         subset = find_layers(layer)
 
-        gpts = {}
         for name in subset:
-            if (not (args.minlayer <= i < args.maxlayer and args.prune_only in name)) == (not args.invert):
-                continue
-            gpts[name] = SparseGPT(subset[name])
-            if args.wbits < 16:
-                gpts[name].quantizer = Quantizer()
-                gpts[name].quantizer.configure(
-                    args.wbits, perchannel=True, sym=False, mse=False
-                )
-
-        def add_batch(name):
-            def tmp(_, inp, out):
-                gpts[name].add_batch(inp[0].data, out.data)
-            return tmp
-        handles = []
-        for name in gpts:
-            handles.append(subset[name].register_forward_hook(add_batch(name)))
-        for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
-        for h in handles:
-            h.remove()
-
-        # Replace pruning with JL Quantization logic here
-        for name in gpts:
-            print(i, name)
-            print('Applying JL Transform and Quantization ...')
+            print(f"Processing layer {i}, {name}")
+            print("Applying JL Transform and Quantization ...")
             
-            # Apply the JL quantization instead of pruning here
+            # Apply JL transform to key vectors
             quantized_k = qjl_quantizer(subset[name].weight.data)  # Quantize the key vectors
+            norm_k = subset[name].weight.data.norm(dim=1) ** 2  # Store the norms
 
-            # Update the weights of the layer using the quantized keys (could be further processed here)
-            subset[name].weight.data = quantized_k
+            # Store the quantized keys and norms in the cache
+            cache['quantized_keys'].append(quantized_k)
+            cache['key_norms'].append(norm_k)
 
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=cache['attention_mask'])[0]
 
         layers[i] = layer.cpu()
         del layer
@@ -133,6 +205,7 @@ def opt_sequential(model, dataloader, dev):
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
+
 
 @torch.no_grad()
 def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
