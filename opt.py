@@ -393,14 +393,14 @@ if __name__ == '__main__':
         args.dataset, nsamples=args.nsamples, seed=args.seed, model=args.model, seqlen=model.seqlen
     )
 
-    if (args.sparsity or args.prunen) and not args.gmp:
-        tick = time.time()
-        opt_sequential(model, dataloader, DEV)
-        for n, p in model.named_parameters():
-            print(n, torch.mean((p == 0).float()))
-            if 'fc2' in n:
-                break
-        print(time.time() - tick)
+    # if (args.sparsity or args.prunen) and not args.gmp:
+    tick = time.time()
+    opt_sequential(model, dataloader, DEV)
+    for n, p in model.named_parameters():
+        print(n, torch.mean((p == 0).float()))
+        if 'fc2' in n:
+            break
+    print(time.time() - tick)
 
     for dataset in ['wikitext2', 'ptb', 'c4']:
         dataloader, testloader = get_loaders(
