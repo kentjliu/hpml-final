@@ -145,29 +145,30 @@ def opt_sequential(model, dataloader, dev):
                 if 'fc1' in name or 'fc2' in name:
                     print(f"Skipping QJL for {name}")
                     continue
-                input_dim = subset[name].weight.data.shape[1]
-                output_dim = int(input_dim * args.qjl_ratio)
+                if 'k_proj' in name:
+                    input_dim = subset[name].weight.data.shape[1]
+                    output_dim = int(input_dim * args.qjl_ratio)
 
-                # Adjust QJL to match expected downstream dimensions
-                expected_output_dim = subset[name].weight.shape[0]  # Expected number of rows
-                if output_dim != expected_output_dim:
-                    print(f"Adjusting QJL output_dim from {output_dim} to {expected_output_dim}")
-                    output_dim = expected_output_dim
+                    # Adjust QJL to match expected downstream dimensions
+                    expected_output_dim = subset[name].weight.shape[0]  # Expected number of rows
+                    if output_dim != expected_output_dim:
+                        print(f"Adjusting QJL output_dim from {output_dim} to {expected_output_dim}")
+                        output_dim = expected_output_dim
 
-                qjl = QJLTransform(input_dim, output_dim, device=dev)
-                reduced_weight = qjl.apply(subset[name].weight.data)
+                    qjl = QJLTransform(input_dim, output_dim, device=dev)
+                    reduced_weight = qjl.apply(subset[name].weight.data)
 
-                # Debug reduced weight dimensions
-                print(f"Reduced weight shape: {reduced_weight.shape}, Expected shape: {subset[name].weight.shape}")
+                    # Debug reduced weight dimensions
+                    print(f"Reduced weight shape: {reduced_weight.shape}, Expected shape: {subset[name].weight.shape}")
 
-                # Quantize the reduced weights
-                print(f'Layer {i}, component {name}: Quantizing Reduced Weights ...')
-                quantizer = Quantizer()
-                quantizer.configure(args.wbits, perchannel=True, sym=False, mse=False)
-                quantized_weight = quantizer.quantize(reduced_weight)
-                
-                # Update weight matrix with quantized weights
-                subset[name].weight.data = quantized_weight
+                    # Quantize the reduced weights
+                    print(f'Layer {i}, component {name}: Quantizing Reduced Weights ...')
+                    quantizer = Quantizer()
+                    quantizer.configure(args.wbits, perchannel=True, sym=False, mse=False)
+                    quantized_weight = quantizer.quantize(reduced_weight)
+                    
+                    # Update weight matrix with quantized weights
+                    subset[name].weight.data = quantized_weight
 
             gpts[name].free()
 
