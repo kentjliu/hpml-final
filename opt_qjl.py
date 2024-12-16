@@ -134,10 +134,10 @@ def opt_sequential(model, dataloader, dev):
         # Prune and optionally quantize weights
         for name in gpts:
             print(f'Layer {i}, component {name}: Pruning ...')
-            sparsity = args.sparsity
-            gpts[name].fasterprune(
-                sparsity, prunen=args.prunen, prunem=args.prunem, percdamp=args.percdamp, blocksize=args.blocksize
-            )
+            # sparsity = args.sparsity
+            # gpts[name].fasterprune(
+            #     sparsity, prunen=args.prunen, prunem=args.prunem, percdamp=args.percdamp, blocksize=args.blocksize
+            # )
 
             # Apply QJL to the weight matrix
             if args.qjl_ratio > 0:
@@ -385,7 +385,7 @@ if __name__ == '__main__':
         args.dataset, nsamples=args.nsamples, seed=args.seed, model=args.model, seqlen=model.seqlen
     )
 
-    if (args.sparsity or args.prunen) and not args.gmp:
+    if (args.sparsity or args.prunen or args.qjl_ratio) and not args.gmp:
         tick = time.time()
         opt_sequential(model, dataloader, DEV)
         for n, p in model.named_parameters():
