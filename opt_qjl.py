@@ -33,8 +33,8 @@ def opt_sequential(model, dataloader, dev):
     print('Starting ...')
 
     # Disable KV cache for pruning
-    # use_cache = model.config.use_cache
-    # model.config.use_cache = False
+    use_cache = model.config.use_cache
+    model.config.use_cache = False
     layers = model.model.decoder.layers
 
     # Move embedding and position layers to GPU
