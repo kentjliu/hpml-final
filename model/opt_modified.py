@@ -385,18 +385,15 @@ class OPTSdpaAttention(OPTAttention):
         self.is_decoder = is_decoder
 
     def jl_transform_queries(self, x: torch.Tensor) -> torch.Tensor:
-        print(x.shape)
-        
         jl_matrix = self.jl_matrix.to(x.device)
         print(jl_matrix.shape)
         result = torch.matmul(x, jl_matrix.T)
         return result
     
     def jl_transform_keys(self, x: torch.Tensor) -> torch.Tensor:
-        
         jl_matrix = torch.randn(32, 1536) / (self.reduced_dim ** 0.5)
         jl_matrix.to(x.device)
-        print(jl_matrix.shape)
+        print(jl_matrix.device)
         result = torch.matmul(x, jl_matrix.T)
         return result
     
