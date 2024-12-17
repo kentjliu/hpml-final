@@ -385,6 +385,7 @@ class OPTSdpaAttention(OPTAttention):
         self.is_decoder = is_decoder
 
     def jl_transform(self, x: torch.Tensor) -> torch.Tensor:
+        jl_matrix = self.jl_matrix.to(x.device)
         return torch.matmul(x, self.jl_matrix.T)
     
     def quantize_key(self, sk: torch.Tensor, original_key: torch.Tensor) -> torch.Tensor:
