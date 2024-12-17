@@ -33,12 +33,10 @@ def get_opt(model):
 def opt_sequential(model, dataloader, dev):
     print('Starting ...')
 
-    # Disable KV cache for pruning
     use_cache = model.config.use_cache
     model.config.use_cache = False
     layers = model.model.decoder.layers
 
-    # Move embedding and position layers to GPU
     model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(dev) 
     model.model.decoder.embed_positions = model.model.decoder.embed_positions.to(dev)
     if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
@@ -53,7 +51,6 @@ def opt_sequential(model, dataloader, dev):
     )
     cache = {'i': 0, 'attention_mask': None}
 
-    # Capture input activations with Catcher
     class Catcher(nn.Module):
         def __init__(self, module):
             super().__init__()
@@ -71,7 +68,6 @@ def opt_sequential(model, dataloader, dev):
             pass
     layers[0] = layers[0].module
 
-    # Move embedding layers back to CPU after capturing inputs
     layers[0] = layers[0].cpu()
     model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.cpu()
     model.model.decoder.embed_positions = model.model.decoder.embed_positions.cpu()
@@ -84,14 +80,11 @@ def opt_sequential(model, dataloader, dev):
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
 
-    print('Ready for layer-wise processing.')
+    print('Ready.')
 
-    # Process each layer sequentially
     for i in range(len(layers)):
-        print(f'Processing layer {i} ...')
         layer = layers[i].to(dev)
 
-        # Find subcomponents of the layer for pruning
         subset = find_layers(layer)
         
         gpts = {}
@@ -99,11 +92,11 @@ def opt_sequential(model, dataloader, dev):
             if (not (args.minlayer <= i < args.maxlayer and args.prune_only in name)) == (not args.invert):
               continue
             gpts[name] = SparseGPT(subset[name])
-            # if args.wbits < 16:
-            #     gpts[name].quantizer = Quantizer()
-            #     gpts[name].quantizer.configure(
-            #         args.wbits, perchannel=True, sym=False, mse=False
-            #     )
+            if args.wbits < 16:
+                gpts[name].quantizer = Quantizer()
+                gpts[name].quantizer.configure(
+                    args.wbits, perchannel=True, sym=False, mse=False
+                )
 
         def add_batch(name):
             def tmp(_, inp, out):
@@ -113,93 +106,201 @@ def opt_sequential(model, dataloader, dev):
         for name in gpts:
             handles.append(subset[name].register_forward_hook(add_batch(name)))
         for j in range(args.nsamples):
-            # Validate and adjust input sequence length dynamically
-            if inps.shape[1] > model.seqlen:
-                inps = inps[:, :model.seqlen, :]
-            elif inps.shape[1] < model.seqlen:
-                padding = torch.zeros(
-                    (inps.shape[0], model.seqlen - inps.shape[1], inps.shape[2]),
-                    device=dev, dtype=inps.dtype
-                )
-                inps = torch.cat((inps, padding), dim=1)
-
-            # Validate hidden size
-            if inps.shape[-1] != model.config.hidden_size:
-                raise ValueError(f"Input hidden size {inps.shape[-1]} does not match model's expected size {model.config.hidden_size}")
-            
-            # Forward pass for the current sample
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
         for h in handles:
             h.remove()
 
-        # Prune and optionally quantize weights
         for name in gpts:
-            print(f'Layer {i}, component {name}: Pruning ...')
-            # sparsity = args.sparsity
-            # gpts[name].fasterprune(
-            #     sparsity, prunen=args.prunen, prunem=args.prunem, percdamp=args.percdamp, blocksize=args.blocksize
-            # )
-
-            # Apply QJL to the weight matrix
-            if args.qjl_ratio > 0:
-                print(f'Layer {i}, component {name}: Applying QJL Transform ...')
-
-                if 'fc1' in name or 'fc2' in name:
-                    print(f"Skipping QJL for {name}")
-                    continue
-
-                if 'k_proj' in name or 'q_proj' in name or 'v_proj' in name:
-                    input_dim = subset[name].weight.data.shape[1]
-                    output_dim = int(input_dim * args.qjl_ratio)
-
-                    # Adjust QJL output_dim to match expected downstream dimensions
-                    expected_output_dim = subset[name].weight.shape[0]
-                    if output_dim != expected_output_dim:
-                        print(f"Adjusting QJL output_dim from {output_dim} to {expected_output_dim}")
-                        output_dim = expected_output_dim
-
-                    # Apply JL Transform
-                    qjl = QJLTransform(input_dim, output_dim, device=dev)
-                    reduced_weight = qjl.apply(subset[name].weight.data)
-
-                    # Debugging reduced dimensions
-                    print(f"Reduced weight shape: {reduced_weight.shape}, Expected shape: {subset[name].weight.shape}")
-
-                    # Quantize keys with binary approximation
-                    if 'k_proj' in name:
-                        print(f'Layer {i}, component {name}: Quantizing Keys ...')
-                        quantized_weight = qjl.quantize(reduced_weight)
-
-                    # Quantize values (v_proj) using per-token quantization
-                    elif 'v_proj' in name:
-                        print(f'Layer {i}, component {name}: Per-token Quantization for Values ...')
-                        quantizer = Quantizer()
-                        quantizer.configure(args.wbits, perchannel=True, sym=False, mse=False)
-                        quantized_weight = quantizer.quantize(reduced_weight)
-
-                    else:  # Queries are projected without further quantization
-                        quantized_weight = reduced_weight
-
-                    # Update weight matrix with transformed weights
-                    subset[name].weight.data = quantized_weight
-
+            print(i, name)
+            print('Pruning ...')
+            sparsity = args.sparsity
+            gpts[name].fasterprune(
+                sparsity, prunen=args.prunen, prunem=args.prunem, percdamp=args.percdamp, blocksize=args.blocksize
+            )
             gpts[name].free()
 
-        # Forward pass to validate the layer
         for j in range(args.nsamples):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
 
-        # Move the layer back to CPU
         layers[i] = layer.cpu()
         del layer
         torch.cuda.empty_cache()
 
-        # Update inputs for the next layer
         inps, outs = outs, inps
 
-    # Restore model cache settings
     model.config.use_cache = use_cache
-    print('Pruning and quantization complete.')
+
+# @torch.no_grad()
+# def opt_sequential(model, dataloader, dev):
+#     print('Starting ...')
+
+#     # Disable KV cache for pruning
+#     use_cache = model.config.use_cache
+#     model.config.use_cache = False
+#     layers = model.model.decoder.layers
+
+#     # Move embedding and position layers to GPU
+#     model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(dev) 
+#     model.model.decoder.embed_positions = model.model.decoder.embed_positions.to(dev)
+#     if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+#         model.model.decoder.project_out = model.model.decoder.project_out.to(dev) 
+#     if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+#         model.model.decoder.project_in = model.model.decoder.project_in.to(dev) 
+#     layers[0] = layers[0].to(dev)
+
+#     dtype = next(iter(model.parameters())).dtype
+#     inps = torch.zeros(
+#         (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
+#     )
+#     cache = {'i': 0, 'attention_mask': None}
+
+#     # Capture input activations with Catcher
+#     class Catcher(nn.Module):
+#         def __init__(self, module):
+#             super().__init__()
+#             self.module = module
+#         def forward(self, inp, **kwargs):
+#             inps[cache['i']] = inp
+#             cache['i'] += 1
+#             cache['attention_mask'] = kwargs['attention_mask']
+#             raise ValueError
+#     layers[0] = Catcher(layers[0])
+#     for batch in dataloader:
+#         try:
+#             model(batch[0].to(dev))
+#         except ValueError:
+#             pass
+#     layers[0] = layers[0].module
+
+#     # Move embedding layers back to CPU after capturing inputs
+#     layers[0] = layers[0].cpu()
+#     model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.cpu()
+#     model.model.decoder.embed_positions = model.model.decoder.embed_positions.cpu()
+#     if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+#         model.model.decoder.project_out = model.model.decoder.project_out.cpu()
+#     if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+#         model.model.decoder.project_in = model.model.decoder.project_in.cpu()
+#     torch.cuda.empty_cache()
+
+#     outs = torch.zeros_like(inps)
+#     attention_mask = cache['attention_mask']
+
+#     print('Ready for layer-wise processing.')
+
+#     # Process each layer sequentially
+#     for i in range(len(layers)):
+#         print(f'Processing layer {i} ...')
+#         layer = layers[i].to(dev)
+
+#         # Find subcomponents of the layer for pruning
+#         subset = find_layers(layer)
+        
+#         gpts = {}
+#         for name in subset:
+#             if (not (args.minlayer <= i < args.maxlayer and args.prune_only in name)) == (not args.invert):
+#               continue
+#             gpts[name] = SparseGPT(subset[name])
+#             # if args.wbits < 16:
+#             #     gpts[name].quantizer = Quantizer()
+#             #     gpts[name].quantizer.configure(
+#             #         args.wbits, perchannel=True, sym=False, mse=False
+#             #     )
+
+#         def add_batch(name):
+#             def tmp(_, inp, out):
+#                 gpts[name].add_batch(inp[0].data, out.data)
+#             return tmp
+#         handles = []
+#         for name in gpts:
+#             handles.append(subset[name].register_forward_hook(add_batch(name)))
+#         for j in range(args.nsamples):
+#             # Validate and adjust input sequence length dynamically
+#             if inps.shape[1] > model.seqlen:
+#                 inps = inps[:, :model.seqlen, :]
+#             elif inps.shape[1] < model.seqlen:
+#                 padding = torch.zeros(
+#                     (inps.shape[0], model.seqlen - inps.shape[1], inps.shape[2]),
+#                     device=dev, dtype=inps.dtype
+#                 )
+#                 inps = torch.cat((inps, padding), dim=1)
+
+#             # Validate hidden size
+#             if inps.shape[-1] != model.config.hidden_size:
+#                 raise ValueError(f"Input hidden size {inps.shape[-1]} does not match model's expected size {model.config.hidden_size}")
+            
+#             # Forward pass for the current sample
+#             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+#         for h in handles:
+#             h.remove()
+
+#         # Prune and optionally quantize weights
+#         for name in gpts:
+#             print(f'Layer {i}, component {name}: Pruning ...')
+#             # sparsity = args.sparsity
+#             # gpts[name].fasterprune(
+#             #     sparsity, prunen=args.prunen, prunem=args.prunem, percdamp=args.percdamp, blocksize=args.blocksize
+#             # )
+
+#             # Apply QJL to the weight matrix
+#             if args.qjl_ratio > 0:
+#                 print(f'Layer {i}, component {name}: Applying QJL Transform ...')
+
+#                 if 'fc1' in name or 'fc2' in name:
+#                     print(f"Skipping QJL for {name}")
+#                     continue
+
+#                 if 'k_proj' in name or 'q_proj' in name or 'v_proj' in name:
+#                     input_dim = subset[name].weight.data.shape[1]
+#                     output_dim = int(input_dim * args.qjl_ratio)
+
+#                     # Adjust QJL output_dim to match expected downstream dimensions
+#                     expected_output_dim = subset[name].weight.shape[0]
+#                     if output_dim != expected_output_dim:
+#                         print(f"Adjusting QJL output_dim from {output_dim} to {expected_output_dim}")
+#                         output_dim = expected_output_dim
+
+#                     # Apply JL Transform
+#                     qjl = QJLTransform(input_dim, output_dim, device=dev)
+#                     reduced_weight = qjl.apply(subset[name].weight.data)
+
+#                     # Debugging reduced dimensions
+#                     print(f"Reduced weight shape: {reduced_weight.shape}, Expected shape: {subset[name].weight.shape}")
+
+#                     # Quantize keys with binary approximation
+#                     if 'k_proj' in name:
+#                         print(f'Layer {i}, component {name}: Quantizing Keys ...')
+#                         quantized_weight = qjl.quantize(reduced_weight)
+
+#                     # Quantize values (v_proj) using per-token quantization
+#                     elif 'v_proj' in name:
+#                         print(f'Layer {i}, component {name}: Per-token Quantization for Values ...')
+#                         quantizer = Quantizer()
+#                         quantizer.configure(args.wbits, perchannel=True, sym=False, mse=False)
+#                         quantized_weight = quantizer.quantize(reduced_weight)
+
+#                     else:  # Queries are projected without further quantization
+#                         quantized_weight = reduced_weight
+
+#                     # Update weight matrix with transformed weights
+#                     subset[name].weight.data = quantized_weight
+
+#             gpts[name].free()
+
+#         # Forward pass to validate the layer
+#         for j in range(args.nsamples):
+#             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+
+#         # Move the layer back to CPU
+#         layers[i] = layer.cpu()
+#         del layer
+#         torch.cuda.empty_cache()
+
+#         # Update inputs for the next layer
+#         inps, outs = outs, inps
+
+#     # Restore model cache settings
+#     model.config.use_cache = use_cache
+#     print('Pruning and quantization complete.')
 
 @torch.no_grad()
 def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
