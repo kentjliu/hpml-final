@@ -378,10 +378,11 @@ class OPTSdpaAttention(OPTAttention):
     The only required change would be on the forward pass where it needs to correctly call the public API of sdpa
     attention and deal with padding tokens in case the input contains any of them.
     """
-    def __init__(self, config):
+    def __init__(self, config, is_decoder):
         super().__init__(config)
         self.reduced_dim = self.head_dim // 2
         self.jl_matrix = torch.randn(self.reduced_dim, config.hidden_size) / (self.reduced_dim ** 0.5)
+        self.is_decoder = is_decoder
 
     def jl_transform(self, x: torch.Tensor) -> torch.Tensor:
         return torch.matmul(x, self.jl_matrix.T)
