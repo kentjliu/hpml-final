@@ -141,7 +141,6 @@ class LlamaAttention_QJL(nn.Module):
 
         self.enable_bias = config.enable_bias
 
-        self.head_dim = self.embed_dim // self.num_heads
         self.is_causal = True
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
