@@ -142,46 +142,46 @@ def opt_sequential(model, dataloader, dev):
             # Apply QJL to the weight matrix
             if args.qjl_ratio > 0:
                 print(f'Layer {i}, component {name}: Applying QJL Transform ...')
+
                 if 'fc1' in name or 'fc2' in name:
                     print(f"Skipping QJL for {name}")
                     continue
-                if 'k_proj' in name:
+
+                if 'k_proj' in name or 'q_proj' in name or 'v_proj' in name:
                     input_dim = subset[name].weight.data.shape[1]
                     output_dim = int(input_dim * args.qjl_ratio)
 
-                    # Adjust QJL to match expected downstream dimensions
-                    expected_output_dim = subset[name].weight.shape[0]  # Expected number of rows
+                    # Adjust QJL output_dim to match expected downstream dimensions
+                    expected_output_dim = subset[name].weight.shape[0]
                     if output_dim != expected_output_dim:
                         print(f"Adjusting QJL output_dim from {output_dim} to {expected_output_dim}")
                         output_dim = expected_output_dim
 
-                    qjl = QJLTransform(input_dim, output_dim, device=dev, dtype=subset[name].weight.data.dtype)
-
-                    # JL Transform projection
+                    # Apply JL Transform
+                    qjl = QJLTransform(input_dim, output_dim, device=dev)
                     reduced_weight = qjl.apply(subset[name].weight.data)
-                    print(f"Reduced weight shape after JL: {reduced_weight.shape}")
 
-                    # Sign-based Quantization
-                    quantized_weight = qjl.quantize_sign(reduced_weight)
-                    print(f"Quantized weight shape: {quantized_weight.shape}")
+                    # Debugging reduced dimensions
+                    print(f"Reduced weight shape: {reduced_weight.shape}, Expected shape: {subset[name].weight.shape}")
 
-                    # Update weight with quantized JL transform
+                    # Quantize keys with binary approximation
+                    if 'k_proj' in name:
+                        print(f'Layer {i}, component {name}: Quantizing Keys ...')
+                        quantized_weight = qjl.quantize(reduced_weight)
+
+                    # Quantize values (v_proj) using per-token quantization
+                    elif 'v_proj' in name:
+                        print(f'Layer {i}, component {name}: Per-token Quantization for Values ...')
+                        quantizer = Quantizer()
+                        quantizer.configure(args.wbits, perchannel=True, sym=False, mse=False)
+                        quantized_weight = quantizer.quantize(reduced_weight)
+
+                    else:  # Queries are projected without further quantization
+                        quantized_weight = reduced_weight
+
+                    # Update weight matrix with transformed weights
                     subset[name].weight.data = quantized_weight
-                    print(f'Layer {i}, component {name}: Updated weights with QJL Transform.')
-                elif 'v_proj' in name:
-                    print(f'Layer {i}, component {name}: Applying Per-token Quantization for Values ...')
 
-                    # Initialize quantizer
-                    quantizer = Quantizer()
-                    quantizer.configure(args.wbits, perchannel=True, sym=False, mse=False)
-
-                    # Quantize weights
-                    quantized_weight = quantizer.quantize(subset[name].weight.data)
-                    print(f"Quantized weight shape: {quantized_weight.shape}")
-
-                    # Update weight with quantized weights
-                    subset[name].weight.data = quantized_weight
-                    print(f'Layer {i}, component {name}: Updated weights with Per-token Quantization.')
                     
 
             gpts[name].free()
