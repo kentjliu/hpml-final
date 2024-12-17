@@ -140,10 +140,10 @@ class OPTAttention_QJL2(nn.Module):
             )
 
         # Projection layers
-        self.q_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
-        self.k_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
-        self.v_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
-        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
+        self.q_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
+        self.k_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
+        self.v_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
+        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
 
         # QJL-related parameters
         self.qjl = config.qjl
