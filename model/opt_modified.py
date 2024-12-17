@@ -123,7 +123,8 @@ class OPTAttention(nn.Module):
         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
-        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
+        # self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
+        self.out_proj = nn.Linear(self.head_dim // 2, self.embed_dim, bias=self.enable_bias)
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int) -> torch.Tensor:
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
@@ -462,14 +463,14 @@ class OPTSdpaAttention(OPTAttention):
 
         # Apply JL Transform queries has 2048, 768
         reduced_query = self.jl_transform_queries(query_states)  # S @ q
-        print("queries transformed!")
         
-        print(key_states.shape)
         # keys has 2048, 1536
         reduced_key = self.jl_transform_keys(key_states)      # S @ k
 
         # Quantize the keys
         quantized_keys = self.quantize_key(reduced_key, key_states)  # sign(S @ k) * ||k||_2 / sqrt(m)
+        print(quantized_keys.shape)
+        print(reduced_query.shape)
 
         present_key_value = (key_states, value_states)
 
@@ -484,6 +485,7 @@ class OPTSdpaAttention(OPTAttention):
 
         # Attention output with values
         attn_output = torch.matmul(attn_weights, value_states)
+        print(attn_output.shape)
         attn_output = self.out_proj(attn_output)
 
         return attn_output, None, present_key_value
