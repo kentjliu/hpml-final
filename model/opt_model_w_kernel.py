@@ -24,6 +24,7 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 import torch.nn.functional as F
 
+from transformers import DynamicCache
 from transformers.activations import ACT2FN
 from transformers.generation import GenerationMixin
 from transformers.modeling_attn_mask_utils import (
@@ -67,6 +68,30 @@ _CHECKPOINT_FOR_SEQUENCE_CLASSIFICATION = "ArthurZ/opt-350m-dummy-sc"
 _SEQ_CLASS_EXPECTED_LOSS = 1.71
 _SEQ_CLASS_EXPECTED_OUTPUT = "'LABEL_0'"
 
+class QJLCache(DynamicCache):
+    def __init__(self, num_hidden_layers: int) -> None:
+        super().__init__()
+        self._seen_tokens = 0  # Used in `generate` to keep tally of how many tokens the cache has seen
+        self.cache: [Tuple[torch.Tensor]] = [None] * num_hidden_layers
+
+    def __getitem__(self, layer_idx: int) -> List[Tuple[torch.Tensor]]:
+        return (self.cache[layer_idx])
+
+    def update(self, key_value: [Tuple[torch.Tensor]], layer_idx: int):
+        if self.cache is None:
+            self.cache = [key_value]
+        else:
+            if len(self.cache) < layer_idx:
+                self.cache.append(key_value)
+            else:
+                self.cache[layer_idx] = key_value
+
+    def get_seq_length(self):
+        if self.cache[0] is not None:
+            return self.cache[0][-1]
+        else:
+            return 0
+        
 
 class OPTLearnedPositionalEmbedding(nn.Embedding):
     """
@@ -977,7 +1002,7 @@ class OPTDecoder(OPTPreTrainedModel):
     "The bare OPT Model outputting raw hidden-states without any specific head on top.",
     OPT_START_DOCSTRING,
 )
-class OPTModel(OPTPreTrainedModel):
+class OPTModel_JL(OPTPreTrainedModel):
     def __init__(self, config: OPTConfig):
         super().__init__(config)
         self.decoder = OPTDecoder(config)
@@ -1005,7 +1030,7 @@ class OPTModel(OPTPreTrainedModel):
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         head_mask: Optional[torch.Tensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        past_key_values: Optional[QJLCache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -1050,7 +1075,7 @@ class OPTForCausalLM_JL_Kernel(OPTPreTrainedModel, GenerationMixin):
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = OPTModel(config)
+        self.model = OPTModel_JL(config)
 
         # the lm_head weight is automatically tied to the embed tokens weight
         self.lm_head = nn.Linear(config.word_embed_proj_dim, config.vocab_size, bias=False)
