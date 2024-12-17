@@ -456,10 +456,13 @@ class OPTSdpaAttention(OPTAttention):
             key_states = torch.cat([past_keys, key_states], dim=2)  # Concatenate along sequence dimension
             value_states = torch.cat([past_values, value_states], dim=2)
 
-        print(key_states)
+        print(query_states.shape)
+        print(reduced_query.shape)
         # Apply JL Transform
         reduced_query = self.jl_transform(query_states)  # S @ q
         print("queries transformed!")
+        
+        print(key_states.shape)
         reduced_key = self.jl_transform(key_states)      # S @ k
 
         # Quantize the keys
