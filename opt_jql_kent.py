@@ -182,8 +182,6 @@ def opt_sequential(model, dataloader, dev):
                     # Update weight matrix with transformed weights
                     subset[name].weight.data = quantized_weight
 
-                    
-
             gpts[name].free()
 
         # Forward pass to validate the layer
