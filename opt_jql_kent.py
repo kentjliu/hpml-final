@@ -7,7 +7,7 @@ from quant import *
 from sparsegpt import *
 from modelutils import *
 
-from jl_transform import *
+from jl_transform_kent import *
 
 try:
     import wandb
@@ -28,10 +28,9 @@ def get_opt(model):
     model.seqlen = model.config.max_position_embeddings
     return model
 
-
 @torch.no_grad()
 def opt_sequential(model, dataloader, dev):
-    print('Starting QJL for Keys and Quantization for Values...')
+    print('Starting ...')
 
     # Disable KV cache for pruning
     use_cache = model.config.use_cache
@@ -39,8 +38,12 @@ def opt_sequential(model, dataloader, dev):
     layers = model.model.decoder.layers
 
     # Move embedding and position layers to GPU
-    model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(dev)
+    model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(dev) 
     model.model.decoder.embed_positions = model.model.decoder.embed_positions.to(dev)
+    if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+        model.model.decoder.project_out = model.model.decoder.project_out.to(dev) 
+    if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+        model.model.decoder.project_in = model.model.decoder.project_in.to(dev) 
     layers[0] = layers[0].to(dev)
 
     dtype = next(iter(model.parameters())).dtype
@@ -49,7 +52,7 @@ def opt_sequential(model, dataloader, dev):
     )
     cache = {'i': 0, 'attention_mask': None}
 
-    # Capture input activations
+    # Capture input activations with Catcher
     class Catcher(nn.Module):
         def __init__(self, module):
             super().__init__()
@@ -59,7 +62,6 @@ def opt_sequential(model, dataloader, dev):
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             raise ValueError
-
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
@@ -68,63 +70,138 @@ def opt_sequential(model, dataloader, dev):
             pass
     layers[0] = layers[0].module
 
+    # Move embedding layers back to CPU after capturing inputs
     layers[0] = layers[0].cpu()
+    model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.cpu()
+    model.model.decoder.embed_positions = model.model.decoder.embed_positions.cpu()
+    if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+        model.model.decoder.project_out = model.model.decoder.project_out.cpu()
+    if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+        model.model.decoder.project_in = model.model.decoder.project_in.cpu()
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
 
-    print('Processing layers sequentially...')
+    print('Ready for layer-wise processing.')
 
-    for i, layer in enumerate(layers):
+    # Process each layer sequentially
+    for i in range(len(layers)):
         print(f'Processing layer {i} ...')
-        layer = layer.to(dev)
+        layer = layers[i].to(dev)
 
-        # Find subcomponents
+        # Find subcomponents of the layer for pruning
         subset = find_layers(layer)
+        
+        gpts = {}
+        for name in subset:
+            if (not (args.minlayer <= i < args.maxlayer and args.prune_only in name)) == (not args.invert):
+              continue
+            gpts[name] = SparseGPT(subset[name])
+            # if args.wbits < 16:
+            #     gpts[name].quantizer = Quantizer()
+            #     gpts[name].quantizer.configure(
+            #         args.wbits, perchannel=True, sym=False, mse=False
+            #     )
 
-        for name, module in subset.items():
-            if 'k_proj' in name or 'q_proj' in name: 
-                print(f'Applying QJL to {name} ...')
-                input_dim = module.weight.shape[1]  # Original input dimension (768)
-                reduced_dim = int(input_dim * args.qjl_ratio)  # Reduced dimension via QJL
-            
-                # Step 1: Apply QJL Transform to reduce dimensions
-                qjl = QJLTransform(input_dim, reduced_dim, device=dev)
-                reduced_weight = qjl.apply(module.weight.data)  # Shape: [768, reduced_dim]
-            
-                # Step 2: Re-expand to original dimensions
-                re_proj = torch.nn.Linear(reduced_dim, input_dim, bias=False).to(dev)
-                re_proj_weight = re_proj.weight.data  # Access linear layer's weights
-            
-                # Ensure dtype compatibility
-                re_proj_weight = re_proj_weight.to(reduced_weight.dtype)  # Match dtype with reduced_weight
-            
-                # Perform re-projection
-                restored_weight = torch.matmul(reduced_weight, re_proj_weight.T)  # Back to shape [768, 768]
-            
-                # Step 3: Update module weights with restored shape
-                module.weight.data = restored_weight
-                print(f"Restored weight shape for {name}: {module.weight.shape}")
+        def add_batch(name):
+            def tmp(_, inp, out):
+                gpts[name].add_batch(inp[0].data, out.data)
+            return tmp
+        handles = []
+        for name in gpts:
+            handles.append(subset[name].register_forward_hook(add_batch(name)))
+        for j in range(args.nsamples):
+            # Validate and adjust input sequence length dynamically
+            if inps.shape[1] > model.seqlen:
+                inps = inps[:, :model.seqlen, :]
+            elif inps.shape[1] < model.seqlen:
+                padding = torch.zeros(
+                    (inps.shape[0], model.seqlen - inps.shape[1], inps.shape[2]),
+                    device=dev, dtype=inps.dtype
+                )
+                inps = torch.cat((inps, padding), dim=1)
 
-            elif 'v_proj' in name:  # Quantize values per-token
-                print(f'Quantizing {name} per-token...')
-                quantizer = Quantizer()
-                quantizer.configure(args.wbits, perchannel=False, sym=False, mse=False)
-                for token_idx in range(module.weight.shape[0]):  # Per-token quantization
-                    module.weight.data[token_idx] = quantizer.quantize(module.weight.data[token_idx])
+            # Validate hidden size
+            if inps.shape[-1] != model.config.hidden_size:
+                raise ValueError(f"Input hidden size {inps.shape[-1]} does not match model's expected size {model.config.hidden_size}")
+            
+            # Forward pass for the current sample
+            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+        for h in handles:
+            h.remove()
 
-        # Forward pass through the layer
+        # Prune and optionally quantize weights
+        for name in gpts:
+            print(f'Layer {i}, component {name}: Pruning ...')
+            # sparsity = args.sparsity
+            # gpts[name].fasterprune(
+            #     sparsity, prunen=args.prunen, prunem=args.prunem, percdamp=args.percdamp, blocksize=args.blocksize
+            # )
+
+            # Apply QJL to the weight matrix
+            if args.qjl_ratio > 0:
+                print(f'Layer {i}, component {name}: Applying QJL Transform ...')
+                if 'fc1' in name or 'fc2' in name:
+                    print(f"Skipping QJL for {name}")
+                    continue
+                if 'k_proj' in name:
+                    input_dim = subset[name].weight.data.shape[1]
+                    output_dim = int(input_dim * args.qjl_ratio)
+
+                    # Adjust QJL to match expected downstream dimensions
+                    expected_output_dim = subset[name].weight.shape[0]  # Expected number of rows
+                    if output_dim != expected_output_dim:
+                        print(f"Adjusting QJL output_dim from {output_dim} to {expected_output_dim}")
+                        output_dim = expected_output_dim
+
+                    qjl = QJLTransform(input_dim, output_dim, device=dev, dtype=subset[name].weight.data.dtype)
+
+                    # JL Transform projection
+                    reduced_weight = qjl.apply(subset[name].weight.data)
+                    print(f"Reduced weight shape after JL: {reduced_weight.shape}")
+
+                    # Sign-based Quantization
+                    quantized_weight = qjl.quantize_sign(reduced_weight)
+                    print(f"Quantized weight shape: {quantized_weight.shape}")
+
+                    # Update weight with quantized JL transform
+                    subset[name].weight.data = quantized_weight
+                    print(f'Layer {i}, component {name}: Updated weights with QJL Transform.')
+                elif 'v_proj' in name:
+                    print(f'Layer {i}, component {name}: Applying Per-token Quantization for Values ...')
+
+                    # Initialize quantizer
+                    quantizer = Quantizer()
+                    quantizer.configure(args.wbits, perchannel=True, sym=False, mse=False)
+
+                    # Quantize weights
+                    quantized_weight = quantizer.quantize(subset[name].weight.data)
+                    print(f"Quantized weight shape: {quantized_weight.shape}")
+
+                    # Update weight with quantized weights
+                    subset[name].weight.data = quantized_weight
+                    print(f'Layer {i}, component {name}: Updated weights with Per-token Quantization.')
+                    
+
+            gpts[name].free()
+
+        # Forward pass to validate the layer
         for j in range(args.nsamples):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
 
+        # Move the layer back to CPU
         layers[i] = layer.cpu()
+        del layer
         torch.cuda.empty_cache()
+
+        # Update inputs for the next layer
         inps, outs = outs, inps
 
+    # Restore model cache settings
     model.config.use_cache = use_cache
-    print('KV Cache QJL and Value Quantization Complete.')
-    
+    print('Pruning and quantization complete.')
+
 @torch.no_grad()
 def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
     print('Evaluating ...')
