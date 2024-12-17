@@ -53,9 +53,10 @@ from transformers.utils import (
 )
 from transformers.models.opt.configuration_opt import OPTConfig
 
+from transformers import modeling_flash_attention_utils
 
-if is_flash_attn_2_available():
-    from transformers.modeling_flash_attention_utils import _flash_attention_forward
+# if is_flash_attn_2_available():
+#     from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
 
 logger = logging.get_logger(__name__)
@@ -289,7 +290,7 @@ class LlamaAttention_QJL(nn.Module):
                 key_states = key_states.to(target_dtype)
                 value_states = value_states.to(target_dtype)
 
-            attn_output = _flash_attention_forward(
+            attn_output = modeling_flash_attention_utils._flash_attention_forward(
                 query_states.transpose(1, 2), key_states.transpose(1, 2),
                 value_states.transpose(1, 2), None, q_len, dropout=0.0, is_causal=self.is_causal,
             )
