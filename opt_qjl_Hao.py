@@ -128,21 +128,39 @@ def opt_sequential(model, dataloader, dev):
                 module.weight.data = key_reprojected_gpu
                 print(f"Updated weights for {name}: {module.weight.shape}")
 
-            elif 'v_proj' in name:  # Quantize values
-                print(f'Quantizing values in {name}...')
+            elif 'v_proj' in name:  # Quantize values per-token
+                print(f'Quantizing values in {name} per-token...')
                 value_states = module.weight.data.clone()
-                quantized_values = torch.zeros_like(value_states, dtype=value_states.dtype, device=value_states.device)
-                scale_factors = torch.zeros((value_states.shape[1],), device=value_states.device, dtype=value_states.dtype)
-        
-                for dim_idx in range(value_states.shape[1]):  # Per-channel quantization
-                    column = value_states[:, dim_idx]
-                    scale = column.abs().max() / 127.0
-                    scale_factors[dim_idx] = scale
-                    quantized_column = (column / scale).round().clamp(-127, 127).to(torch.int8)
-                    quantized_values[:, dim_idx] = quantized_column.to(value_states.dtype) * scale
-        
-                module.weight.data = quantized_values
+                quantized_values = torch.zeros_like(value_states, dtype=torch.int8, device=value_states.device)
+                scale_factors = torch.zeros((value_states.shape[0],), device=value_states.device, dtype=torch.float)  # Scale per token
+            
+                for token_idx in range(value_states.shape[0]):  # Loop over tokens (rows)
+                    row = value_states[token_idx, :]  # Extract one token embedding
+                    scale = row.abs().max() / 127.0  # Compute scale factor
+                    scale_factors[token_idx] = scale
+                    quantized_row = (row / scale).round().clamp(-127, 127).to(torch.int8)
+                    quantized_values[token_idx, :] = quantized_row
+            
+                # Dequantize back to float (optional)
+                dequantized_values = quantized_values.to(torch.float32) * scale_factors.unsqueeze(1)
+                module.weight.data = dequantized_values.to(module.weight.data.dtype)
                 print(f"Quantized values shape for {name}: {module.weight.shape}")
+
+            # elif 'v_proj' in name:  # Quantize values per-channel
+            #     print(f'Quantizing values in {name}...')
+            #     value_states = module.weight.data.clone()
+            #     quantized_values = torch.zeros_like(value_states, dtype=value_states.dtype, device=value_states.device)
+            #     scale_factors = torch.zeros((value_states.shape[1],), device=value_states.device, dtype=value_states.dtype)
+        
+            #     for dim_idx in range(value_states.shape[1]):  # Per-channel quantization
+            #         column = value_states[:, dim_idx]
+            #         scale = column.abs().max() / 127.0
+            #         scale_factors[dim_idx] = scale
+            #         quantized_column = (column / scale).round().clamp(-127, 127).to(torch.int8)
+            #         quantized_values[:, dim_idx] = quantized_column.to(value_states.dtype) * scale
+        
+            #     module.weight.data = quantized_values
+            #     print(f"Quantized values shape for {name}: {module.weight.shape}")
 
         # Forward pass through the layer
         for j in range(args.nsamples):
