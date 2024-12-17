@@ -126,7 +126,6 @@ class OPTAttention(nn.Module):
         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
-        # self.out_proj = nn.Linear(self.head_dim // 2, self.embed_dim,bias=self.enable_bias)
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int) -> torch.Tensor:
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
@@ -250,6 +249,7 @@ class OPTAttention(nn.Module):
         attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim)
 
         attn_output = self.out_proj(attn_output)
+        print("hello there")
 
         return attn_output, attn_weights_reshaped, past_key_value
 
