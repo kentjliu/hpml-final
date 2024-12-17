@@ -519,6 +519,7 @@ class OPTDecoderLayer(nn.Module):
         self.fc1 = nn.Linear(self.embed_dim, config.ffn_dim, bias=config.enable_bias)
         self.fc2 = nn.Linear(config.ffn_dim, self.embed_dim, bias=config.enable_bias)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim, elementwise_affine=config.layer_norm_elementwise_affine)
+        print(config._attn_implementation)
 
     def forward(
         self,
