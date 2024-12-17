@@ -124,8 +124,29 @@ class OPTAttention(nn.Module):
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
 
+        # JL Transform matrix (Gaussian Random Matrix)
+        self.jl_transform = torch.randn((config.jl_dim, self.head_dim)) / (self.head_dim ** 0.5)
+        self.jl_dim = self.head_dim // 2 # config.jl_dim  # m: Dimension after JL Transform
+
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int) -> torch.Tensor:
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+    
+    def jl_transform_and_quantize(self, key_states: torch.Tensor) -> torch.Tensor:
+        """
+        Apply JL Transform and quantize the key states.
+        Args:
+            key_states: Tensor of shape [batch_size, num_heads, seq_len, head_dim]
+
+        Returns:
+            Quantized keys: Tensor of shape [batch_size, num_heads, seq_len, jl_dim]
+        """
+        key_states = torch.einsum("bhld,md->bhlm", key_states, self.jl_transform.to(key_states.device))  # S · k
+
+        key_signs = torch.sign(key_states)  # binary {±1}
+        scaling_factor = torch.norm(key_states, dim=-1, keepdim=True) / self.jl_dim**0.5  # Scale with L2 norm
+        quantized_keys = key_signs * scaling_factor
+
+        return quantized_keys
 
     def forward(
         self,
