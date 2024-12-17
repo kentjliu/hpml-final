@@ -123,8 +123,8 @@ class OPTAttention(nn.Module):
         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
-        # self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
-        self.out_proj = nn.Linear(self.head_dim // 2, self.embed_dim, bias=self.enable_bias)
+        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
+        # self.out_proj = nn.Linear(self.head_dim // 2, self.embed_dim,bias=self.enable_bias)
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int) -> torch.Tensor:
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
@@ -375,40 +375,59 @@ class OptFlashAttention2(OPTAttention):
 
 class OPTSdpaAttention(OPTAttention):
     """
-    OPT sdpa attention module. This module inherits from `OPTAttention` as the weights of the module stays untouched.
-    The only required change would be on the forward pass where it needs to correctly call the public API of sdpa
-    attention and deal with padding tokens in case the input contains any of them.
+    OPT attention module with Johnson-Lindenstrauss (JL) transform and sign quantization.
+    The JL transform reduces the dimension of keys and queries before computing attention,
+    and keys are quantized using sign bits scaled by their L2 norm.
     """
     def __init__(self, config, is_decoder):
         super().__init__(config)
-        self.reduced_dim = self.head_dim // 2
-        self.jl_matrix_queries = torch.randn(32, 768) / (self.reduced_dim ** 0.5)
-        self.jl_matrix_keys = torch.randn(32, 1536) / (self.reduced_dim ** 0.5)
+        
+        # Original dimensions
+        self.head_dim = config.hidden_size // config.num_attention_heads
+        self.all_head_size = config.num_attention_heads * self.head_dim
+        
+        # Fixed reduced dimension for JL transform
+        self.reduced_dim = 32  # Can be adjusted based on needs
+        
+        # Initialize JL matrices with proper dimensions
+        # For queries: (reduced_dim, hidden_size)
+        self.jl_matrix_queries = torch.randn(self.reduced_dim, self.all_head_size) / (self.reduced_dim ** 0.5)
+        # For keys: same dimension as queries for proper inner product
+        self.jl_matrix_keys = torch.randn(self.reduced_dim, self.all_head_size) / (self.reduced_dim ** 0.5)
+        
         self.is_decoder = is_decoder
 
     def jl_transform_queries(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply JL transform to queries.
+        Input x shape: (batch_size, seq_length, hidden_size)
+        Output shape: (batch_size, seq_length, reduced_dim)
+        """
+        # Move JL matrix to correct device and perform transform
         jl_matrix = self.jl_matrix_queries.to(x.device)
-        print(jl_matrix.shape)
-        result = torch.matmul(x, jl_matrix.T)
-        return result
+        return torch.matmul(x, jl_matrix.T)
     
     def jl_transform_keys(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply JL transform to keys.
+        Input x shape: (batch_size, seq_length, hidden_size)
+        Output shape: (batch_size, seq_length, reduced_dim)
+        """
+        # Move JL matrix to correct device and perform transform
         jl_matrix = self.jl_matrix_keys.to(x.device)
-        print(jl_matrix.shape)
-        result = torch.matmul(x, jl_matrix.T)
-        return result
+        return torch.matmul(x, jl_matrix.T)
     
     def quantize_key(self, sk: torch.Tensor, original_key: torch.Tensor) -> torch.Tensor:
         """
-        Quantize key:
-        1. Apply sign function to S @ k.
-        2. Scale by ||k||_2 / sqrt(m).
+        Quantize transformed keys using sign quantization scaled by L2 norm.
+        Input sk shape: (batch_size, seq_length, reduced_dim)
+        Input original_key shape: (batch_size, seq_length, hidden_size)
+        Output shape: (batch_size, seq_length, reduced_dim)
         """
         sign_sk = torch.sign(sk)
         l2_norm = torch.norm(original_key, dim=-1, keepdim=True)
         scale_factor = l2_norm / (self.reduced_dim ** 0.5)
         return sign_sk * scale_factor
-
 
     def forward(
         self,
@@ -420,12 +439,11 @@ class OPTSdpaAttention(OPTAttention):
         output_attentions: bool = False,
         position_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        """
+        Forward pass with dimension-reduced attention computation.
+        hidden_states shape: (batch_size, seq_length, hidden_size)
+        """
         if output_attentions or layer_head_mask is not None:
-            logger.warning_once(
-                "OPTModel is using SDPA attention, which currently does not support output_attentions=True."
-                'failing back to eager attention. remove warning using attn_implementation="eager".'
-            )
-
             return super().forward(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
@@ -433,62 +451,48 @@ class OPTSdpaAttention(OPTAttention):
                 past_key_value=past_key_value,
                 output_attentions=output_attentions,
                 key_value_states=key_value_states,
-            )  # TODO after merge add position_ids=position_ids
-        # Cross-attention and caching logic remain the same
-        is_cross_attention = key_value_states is not None
-        bsz, q_len, _ = hidden_states.size()
+                position_ids=position_ids,
+            )
 
-        query_states = self.q_proj(hidden_states) * self.scaling
-        if is_cross_attention:
+        bsz, q_len, _ = hidden_states.size()
+        
+        # Project inputs to queries, keys, and values
+        query_states = self.q_proj(hidden_states) * self.scaling  # (batch_size, seq_length, hidden_size)
+        
+        if key_value_states is not None:
             key_states = self.k_proj(key_value_states)
             value_states = self.v_proj(key_value_states)
         else:
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
 
+        # Handle decoder-specific logic
         if self.is_decoder:
-            # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
-            # Further calls to cross_attention layer can then reuse all cross-attention
-            # key/value_states (first "if" case)
-            # if uni-directional self-attention (decoder) save Tuple(torch.Tensor, torch.Tensor) of
-            # all previous decoder key/value_states. Further calls to uni-directional self-attention
-            # can concat previous decoder key/value_states to current projected key/value_states (third "elif" case)
-            # if encoder bi-directional self-attention `past_key_value` is always `None`
             past_key_value = (key_states, value_states)
 
         if past_key_value is not None:
             past_keys, past_values = past_key_value
-            key_states = torch.cat([past_keys, key_states], dim=2)  # Concatenate along sequence dimension
-            value_states = torch.cat([past_values, value_states], dim=2)
+            key_states = torch.cat([past_keys, key_states], dim=1)
+            value_states = torch.cat([past_values, value_states], dim=1)
 
-        # Apply JL Transform queries has 2048, 768
-        reduced_query = self.jl_transform_queries(query_states)  # S @ q
-        
-        # keys has 2048, 1536
-        reduced_key = self.jl_transform_keys(key_states)      # S @ k
+        # Apply JL transform and quantization
+        reduced_query = self.jl_transform_queries(query_states)  # (batch_size, seq_length, reduced_dim)
+        reduced_key = self.jl_transform_keys(key_states)  # (batch_size, seq_length, reduced_dim)
+        quantized_keys = self.quantize_key(reduced_key, key_states)  # (batch_size, seq_length, reduced_dim)
 
-        # Quantize the keys
-        quantized_keys = self.quantize_key(reduced_key, key_states)  # sign(S @ k) * ||k||_2 / sqrt(m)
-        print(quantized_keys.shape)
-        print(reduced_query.shape)
+        # Compute attention scores
+        attn_weights = torch.matmul(reduced_query, quantized_keys.transpose(-2, -1))  # (batch_size, seq_length, seq_length)
 
-        present_key_value = (key_states, value_states)
-
-        # Approximate inner product
-        attn_weights = torch.matmul(reduced_query, quantized_keys.transpose(-2, -1))  # Approximate q @ k
-
-        # Apply attention mask if provided
         if attention_mask is not None:
-            attn_weights += attention_mask
+            attn_weights = attn_weights + attention_mask
 
         attn_weights = F.softmax(attn_weights, dim=-1)
 
-        # Attention output with values
-        attn_output = torch.matmul(attn_weights, value_states)
-        print(attn_output.shape)
+        # Compute attention output
+        attn_output = torch.matmul(attn_weights, value_states)  # (batch_size, seq_length, hidden_size)
         attn_output = self.out_proj(attn_output)
 
-        return attn_output, None, present_key_value
+        return attn_output, None, (key_states, value_states)
 
 
 OPT_ATTENTION_CLASSES = {
