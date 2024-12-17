@@ -84,7 +84,7 @@ def opt_sequential(model, dataloader, dev):
         subset = find_layers(layer)
 
         for name, module in subset.items():
-            if 'k_proj' in name:  # Apply QJL to keys
+            if 'k_proj' in name or 'q_proj' in name: 
                 print(f'Applying QJL to {name} ...')
                 input_dim = module.weight.shape[1]  # Original input dimension (768)
                 reduced_dim = int(input_dim * args.qjl_ratio)  # Reduced dimension via QJL
@@ -323,7 +323,7 @@ if __name__ == '__main__':
         args.dataset, nsamples=args.nsamples, seed=args.seed, model=args.model, seqlen=model.seqlen
     )
 
-    if (args.sparsity or args.prunen) and not args.gmp:
+    if (args.sparsity or args.prunen or args.qjl_ratio) and not args.gmp:
         tick = time.time()
         opt_sequential(model, dataloader, DEV)
         for n, p in model.named_parameters():
