@@ -199,13 +199,18 @@ class OPTAttention(nn.Module):
             # if encoder bi-directional self-attention `past_key_value` is always `None`
             past_key_value = (key_states, value_states)
 
+        quantized_keys = self.jl_transform_and_quantize(key_states)
+
         proj_shape = (bsz * self.num_heads, -1, self.head_dim)
         query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
-        key_states = key_states.view(*proj_shape)
+        # key_states = key_states.view(*proj_shape)
+        quantized_keys = quantized_keys.view(bsz * self.num_heads, -1, self.jl_dim)
         value_states = value_states.view(*proj_shape)
 
         src_len = key_states.size(1)
-        attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
+        # attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
+        attn_weights = torch.bmm(query_states, quantized_keys.transpose(1, 2))
+
 
         if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
             raise ValueError(
