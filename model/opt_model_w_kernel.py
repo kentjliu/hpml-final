@@ -699,7 +699,8 @@ class OPTDecoderLayer(nn.Module):
 
         # self.self_attn = OPT_ATTENTION_CLASSES[config._attn_implementation](config=config, is_decoder=True)
         self.self_attn = (
-            OPTAttention_JL(config=config)
+            # OPTAttention_JL(config=config)
+            OptFlashAttention2(config=config)
         )
 
         self.do_layer_norm_before = config.do_layer_norm_before
