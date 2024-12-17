@@ -1,7 +1,7 @@
 import torch
-from qjl_kernel import cuda_qjl_quant
-from qjl_kernel import cuda_qjl_score
-from qjl_kernel import cuda_qjl_gqa_score
+from qjl_kernel.csrc import cuda_qjl_quant
+from qjl_kernel.csrc import cuda_qjl_score
+from qjl_kernel.csrc import cuda_qjl_gqa_score
 
 
 def qjl_quant(key_states, outlier_indices, rand_prj, outlier_sketch_dim):
