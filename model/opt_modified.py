@@ -392,7 +392,7 @@ class OPTSdpaAttention(OPTAttention):
     
     def jl_transform_keys(self, x: torch.Tensor) -> torch.Tensor:
         jl_matrix = torch.randn(32, 1536) / (self.reduced_dim ** 0.5)
-        jl_matrix.to(x.device)
+        jl_matrix.to('cuda')
         print(jl_matrix.device)
         result = torch.matmul(x, jl_matrix.T)
         return result
