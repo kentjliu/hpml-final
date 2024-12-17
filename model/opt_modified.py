@@ -17,6 +17,7 @@
 from typing import List, Optional, Tuple, Union
 
 import math
+import numpy as np
 import torch
 import torch.utils.checkpoint
 from torch import nn
@@ -439,7 +440,7 @@ class OPTSdpaAttention(OPTAttention):
         inner_products = torch.matmul(Sq, k_quantized.transpose(-2, -1))  # (batch_size, seq_length, seq_length)
         
         # Multiply by √(π/2)/m · νⱼ
-        scaling_factor = (math.pi / 2).sqrt() / self.m
+        scaling_factor = np.sqrt(np.pi / 2) / self.m
         scores = scaling_factor * inner_products * key_norm.transpose(-2, -1)
         
         # Apply softmax
