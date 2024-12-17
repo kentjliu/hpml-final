@@ -23,9 +23,11 @@ def get_opt(model):
     torch.nn.init.kaiming_uniform_ = skip
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
-    from model.opt_modified import OPTForCausalLM_JL
+    # from model.opt_modified import OPTForCausalLM_JL
     # from transformers import OPTForCausalLM
-    model = OPTForCausalLM_JL.from_pretrained(model, torch_dtype='auto')
+    from model.opt_model_w_kernel import OPTForCausalLM_JL_Kernel
+    # model = OPTForCausalLM_JL.from_pretrained(model, torch_dtype='auto')
+    model = OPTForCausalLM_JL_Kernel.from_pretrained(model, torch_dtype='auto')
     model.seqlen = model.config.max_position_embeddings
     return model
 
