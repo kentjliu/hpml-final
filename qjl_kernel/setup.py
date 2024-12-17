@@ -17,7 +17,7 @@ def append_nvcc_threads(nvcc_extra_args):
 ext_modules = [
     CUDAExtension(
         name='cuda_qjl_score',
-        sources=['csrc/qjl_score_kernel.cu'],
+        sources=['qjl_kernel/csrc/qjl_score_kernel.cu'],
         extra_compile_args={
             "cxx": ["-g", "-O3"],
             "nvcc": append_nvcc_threads([])
@@ -25,7 +25,7 @@ ext_modules = [
     ),
     CUDAExtension(
         name='cuda_qjl_quant',
-        sources=['csrc/qjl_quant_kernel.cu'],
+        sources=['qjl_kernel/csrc/qjl_quant_kernel.cu'],
         extra_compile_args={
             "cxx": ["-g", "-O3"],
             "nvcc": append_nvcc_threads([])
@@ -33,7 +33,7 @@ ext_modules = [
     ),
     CUDAExtension(
         name='cuda_qjl_gqa_score',
-        sources=['csrc/qjl_gqa_score_kernel.cu'],
+        sources=['qjl_kernel/csrc/qjl_gqa_score_kernel.cu'],
         extra_compile_args={
             "cxx": ["-g", "-O3"],
             "nvcc": append_nvcc_threads([])
@@ -41,7 +41,7 @@ ext_modules = [
     ),
     CUDAExtension(
         name='quantization',
-        sources=['csrc/quantization.cu'],
+        sources=['qjl_kernel/csrc/quantization.cu'],
         extra_compile_args={
             "cxx": ["-g", "-O3", "-fopenmp", "-lgomp", "-std=c++17", "-DENABLE_BF16"],
             "nvcc": append_nvcc_threads([
