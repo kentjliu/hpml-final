@@ -381,7 +381,7 @@ class OPTSdpaAttention(OPTAttention):
     def __init__(self, config, is_decoder):
         super().__init__(config)
         self.reduced_dim = self.head_dim // 2
-        self.jl_matrix = torch.randn(self.reduced_dim, config.hidden_size) / (self.reduced_dim ** 0.5)
+        self.jl_matrix = torch.randn(32, 1536) / (self.reduced_dim ** 0.5)
         self.is_decoder = is_decoder
 
     def jl_transform(self, x: torch.Tensor) -> torch.Tensor:
@@ -389,7 +389,7 @@ class OPTSdpaAttention(OPTAttention):
         
         jl_matrix = self.jl_matrix.to(x.device)
         print(jl_matrix.shape)
-        result = torch.matmul(jl_matrix, x)
+        result = torch.matmul(x, jl_matrix.T)
         print(result.device)
         return result
     
