@@ -123,8 +123,8 @@ class OPTLearnedPositionalEmbedding(nn.Embedding):
 
         return super().forward(position_ids + self.offset)
 
-class LlamaAttention_QJL(nn.Module):
-    """QJL-Enhanced Multi-Headed Attention for Llama."""
+class OPTAttention_QJL2(nn.Module):
+    """Multi-headed attention with QJL quantization for OPT."""
 
     def __init__(self, config):
         super().__init__()
@@ -132,89 +132,82 @@ class LlamaAttention_QJL(nn.Module):
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-        self.is_causal = config.is_causal
+        self.attention_dropout = config.attention_dropout
+        
+        if self.hidden_size % self.num_heads != 0:
+            raise ValueError(
+                f"hidden_size ({self.hidden_size}) must be divisible by num_heads ({self.num_heads})."
+            )
 
-        if (self.head_dim * self.num_heads) != self.hidden_size:
-            raise ValueError(f"hidden_size must be divisible by num_heads.")
+        # Projection layers
+        self.q_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
+        self.k_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
+        self.v_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
+        self.o_proj = nn.Linear(self.hidden_size, self.hidden_size, bias=config.attention_bias)
 
-        # Define projection layers
-        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias)
-        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
-        self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
-
-        # QJL-specific configurations
+        # QJL-related parameters
         self.qjl = config.qjl
         self.key_quantization_bits = config.key_quantization_bits
         self.value_quantization_bits = config.value_quantization_bits
         self.group_size = config.group_size
         self.buffer_size = config.buffer_size
 
-        self.outlier_count_general = config.outlier_count_general
-
     def forward(
-        self, 
-        hidden_states, 
-        attention_mask=None, 
-        past_key_value=None, 
-        use_cache=False
-    ):
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        use_cache: bool = False,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor]]]:
         bsz, seq_len, _ = hidden_states.size()
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
 
-        # Reshape for attention heads
-        query_states = query_states.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, seq_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        # Project hidden states to queries, keys, and values
+        query_states = self.q_proj(hidden_states).view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         if past_key_value is not None:
-            kv_sketch = past_key_value[0]
-            value_states_quant = past_key_value[1]
-            value_states_full = past_key_value[2]
+            past_keys, past_values = past_key_value
+            key_states = torch.cat([past_keys, key_states], dim=2)
+            value_states = torch.cat([past_values, value_states], dim=2)
 
-            kv_sketch.update_sketch(key_states)
+        # Quantize keys and values
+        kv_quant = QJLKeyQuantizer(self.qjl, self.buffer_size, self.group_size, self.key_quantization_bits)
+        kv_quant.build_sketch(key_states)
 
-            attn_weights = kv_sketch.attention_score(query_states) / math.sqrt(self.head_dim)
-            if attention_mask is not None:
-                attn_weights += attention_mask
+        value_states_quant, value_scale, value_mn = triton_quantize_and_pack_along_last_dim(
+            value_states, self.group_size, self.value_quantization_bits
+        )
 
-            attn_weights = F.softmax(attn_weights, dim=-1)
+        # Compute attention scores
+        attn_weights = kv_quant.attention_score(query_states)
+        attn_weights /= math.sqrt(self.head_dim)
+
+        if attention_mask is not None:
+            attn_weights += attention_mask
+            attn_weights = torch.max(attn_weights, torch.tensor(torch.finfo(attn_weights.dtype).min))
+
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+
+        # Apply attention weights to values
+        if value_states.shape[-2] > self.buffer_size:
             attn_output = cuda_quantized_bmm_dynamic(
-                self.group_size, 
-                attn_weights, 
-                value_states_quant, 
-                *past_key_value[3:]
-            ) + torch.matmul(attn_weights, value_states_full)
-
+                self.group_size, attn_weights[:, :, :, :-self.buffer_size],
+                value_states_quant, value_scale, value_mn, self.value_quantization_bits
+            )
+            attn_output += torch.matmul(attn_weights[:, :, :, -self.buffer_size:], value_states[:, :, -self.buffer_size:])
         else:
-            kv_sketch = QJLKeyQuantizer(self.qjl, self.outlier_count_general, self.buffer_size, self.group_size, self.key_quantization_bits)
-            kv_sketch.build_sketch(key_states)
+            attn_output = torch.matmul(attn_weights, value_states)
 
-            if value_states.shape[-2] <= self.buffer_size:
-                value_states_quant = None
-                value_states_full = value_states
-            else:
-                value_states_quant, value_scale, value_mn = triton_quantize_and_pack_along_last_dim(
-                    value_states[:, :, :-self.buffer_size, :].contiguous(),
-                    self.group_size,
-                    self.value_quantization_bits
-                )
-                value_states_full = value_states[:, :, -self.buffer_size:, :].contiguous()
-
-            attn_output = torch.matmul(query_states, key_states.transpose(-1, -2)) / math.sqrt(self.head_dim)
-            attn_output = F.softmax(attn_output, dim=-1).matmul(value_states_full)
-
-            if use_cache:
-                past_key_value = (kv_sketch, value_states_quant, value_states_full, value_scale, value_mn)
-
-        attn_output = attn_output.transpose(1, 2).reshape(bsz, seq_len, self.hidden_size)
+        attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
 
-        return attn_output, None, past_key_value if use_cache else None
+        if use_cache:
+            past_key_value = (key_states, value_states)
+
+        return attn_output, past_key_value
+
 
 
 class OPTAttention_JL(nn.Module):
@@ -782,7 +775,7 @@ class OPTDecoderLayer(nn.Module):
         # self.self_attn = OPT_ATTENTION_CLASSES[config._attn_implementation](config=config, is_decoder=True)
         self.self_attn = (
             # OPTAttention_JL(config=config)
-            LlamaAttention_QJL(config=config)
+            OPTAttention_QJL2(config=config)
         )
 
         self.do_layer_norm_before = config.do_layer_norm_before
