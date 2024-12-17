@@ -20,6 +20,7 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+import torch.nn.functional as F
 
 from transformers.activations import ACT2FN
 from transformers.generation import GenerationMixin
@@ -377,6 +378,25 @@ class OPTSdpaAttention(OPTAttention):
     The only required change would be on the forward pass where it needs to correctly call the public API of sdpa
     attention and deal with padding tokens in case the input contains any of them.
     """
+    def __init__(self, config):
+        super().__init__(config)
+        self.reduced_dim = self.head_dim // 2
+        self.jl_matrix = torch.randn(self.reduced_dim, config.hidden_size) / (self.reduced_dim ** 0.5)
+
+    def jl_transform(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.matmul(x, self.jl_matrix.T)
+    
+    def quantize_key(self, sk: torch.Tensor, original_key: torch.Tensor) -> torch.Tensor:
+        """
+        Quantize key:
+        1. Apply sign function to S @ k.
+        2. Scale by ||k||_2 / sqrt(m).
+        """
+        sign_sk = torch.sign(sk)
+        l2_norm = torch.norm(original_key, dim=-1, keepdim=True)
+        scale_factor = l2_norm / (self.reduced_dim ** 0.5)
+        return sign_sk * scale_factor
+
 
     def forward(
         self,
@@ -402,71 +422,46 @@ class OPTSdpaAttention(OPTAttention):
                 output_attentions=output_attentions,
                 key_value_states=key_value_states,
             )  # TODO after merge add position_ids=position_ids
+        # Cross-attention and caching logic remain the same
         is_cross_attention = key_value_states is not None
-
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states) * self.scaling
-        query_states = self._shape(query_states, -1, bsz)
-
-        # get key, value proj
-        if is_cross_attention and past_key_value is not None:
-            # reuse k,v, cross_attentions
-            key_states = past_key_value[0]
-            value_states = past_key_value[1]
-        elif is_cross_attention:
-            # cross_attentions
-            key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
-            value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
-        elif past_key_value is not None:
-            # reuse k, v, self_attention
-            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
-            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
+        if is_cross_attention:
+            key_states = self.k_proj(key_value_states)
+            value_states = self.v_proj(key_value_states)
         else:
-            # self_attention
-            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
-            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+            key_states = self.k_proj(hidden_states)
+            value_states = self.v_proj(hidden_states)
 
-        if self.is_decoder:
-            # if cross_attention save Tuple(torch.Tensor, torch.Tensor) of all cross attention key/value_states.
-            # Further calls to cross_attention layer can then reuse all cross-attention
-            # key/value_states (first "if" case)
-            # if uni-directional self-attention (decoder) save Tuple(torch.Tensor, torch.Tensor) of
-            # all previous decoder key/value_states. Further calls to uni-directional self-attention
-            # can concat previous decoder key/value_states to current projected key/value_states (third "elif" case)
-            # if encoder bi-directional self-attention `past_key_value` is always `None`
-            past_key_value = (key_states, value_states)
+        if past_key_value is not None:
+            past_keys, past_values = past_key_value
+            key_states = torch.cat([past_keys, key_states], dim=2)  # Concatenate along sequence dimension
+            value_states = torch.cat([past_values, value_states], dim=2)
 
-        # shape now is (bsz, num_heads, seq_len, head_dim), all are continuous
+        # Apply JL Transform
+        reduced_query = self.jl_transform(query_states)  # S @ q
+        reduced_key = self.jl_transform(key_states)      # S @ k
 
-        causal_mask = attention_mask
+        # Quantize the keys
+        quantized_keys = self.quantize_key(reduced_key, key_states)  # sign(S @ k) * ||k||_2 / sqrt(m)
+
+        present_key_value = (key_states, value_states)
+
+        # Approximate inner product
+        attn_weights = torch.matmul(reduced_query, quantized_keys.transpose(-2, -1))  # Approximate q @ k
+
+        # Apply attention mask if provided
         if attention_mask is not None:
-            causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
+            attn_weights += attention_mask
 
-        # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
-        # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
-        is_causal = True if causal_mask is None and q_len > 1 else False
+        attn_weights = F.softmax(attn_weights, dim=-1)
 
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
-            query_states,
-            key_states,
-            value_states,
-            attn_mask=causal_mask,
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=is_causal,
-            # this model uses the scaling factor in the query projection for some reason, but not in Q@K^T
-            # so we need to scale to remove scaling in SDPA to have similar results with eager.
-            # Maybe needs a change in the model to remove scaling in query projection
-            scale=1.0,
-        )
-
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.view(bsz, q_len, -1)
+        # Attention output with values
+        attn_output = torch.matmul(attn_weights, value_states)
         attn_output = self.out_proj(attn_output)
 
-        return attn_output, None, past_key_value
+        return attn_output, None, present_key_value
 
 
 OPT_ATTENTION_CLASSES = {
