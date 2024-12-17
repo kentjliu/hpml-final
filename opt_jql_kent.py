@@ -8,6 +8,7 @@ from sparsegpt import *
 from modelutils import *
 
 from jl_transform_kent import *
+from model.opt_utils_qjl import QJLSketch
 
 try:
     import wandb
@@ -16,18 +17,47 @@ except:
     has_wandb = False 
 
 
-def get_opt(model):
+def get_opt(model_name):
     import torch
     def skip(*args, **kwargs):
         pass
     torch.nn.init.kaiming_uniform_ = skip
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
-    # from model.opt_modified import OPTForCausalLM_JL
-    # from transformers import OPTForCausalLM
     from model.opt_model_w_kernel import OPTForCausalLM_JL_Kernel
-    # model = OPTForCausalLM_JL.from_pretrained(model, torch_dtype='auto')
-    model = OPTForCausalLM_JL_Kernel.from_pretrained(model, torch_dtype='auto')
+    from transformers import OPTConfig
+    device = 'cuda'
+    
+    config = OPTConfig.from_pretrained(model_name)
+    config.attention_dropout = 0.0
+    config.key_quantization_bits = 256
+    config.key_quantization_bits_initial_layers = 512
+    config.initial_layers_count = 15
+
+    config.outlier_count_general = 8
+    config.outlier_count_initial_layers = 8
+
+    config.value_quantization_bits = 2
+    config.group_size = 32
+    config.buffer_size = 128
+
+    generator = torch.Generator(device=torch.device(device))
+
+    config.qjl = QJLSketch(dim=(128, config.key_quantization_bits), dim_outlier=256, rot=True, rng=generator)
+    config.qjl_initial_layers = QJLSketch(dim=(128, config.key_quantization_bits_initial_layers), dim_outlier=128,
+                                              rot=True,
+                                              rng=generator)
+
+    # config.use_flash = True
+
+    model = OPTForCausalLM_JL_Kernel.from_pretrained(
+        pretrained_model_name_or_path=model_name, 
+        torch_dtype='auto',
+        config=config,
+        cache_dir=None,
+        low_cpu_mem_usage=True,
+        device_map="auto"
+    )
     model.seqlen = model.config.max_position_embeddings
     return model
 

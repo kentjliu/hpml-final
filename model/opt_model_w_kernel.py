@@ -153,6 +153,21 @@ class OPTAttention(nn.Module):
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
 
+        self.initial_layers_count = config.initial_layers_count
+
+        self.qjl = config.qjl
+        self.key_quantization_bits = config.key_quantization_bits
+
+        self.qjl_initial_layers = config.qjl_initial_layers
+        self.key_quantization_bits_initial_layers = config.key_quantization_bits_initial_layers
+
+        self.outlier_count_initial_layers = config.outlier_count_initial_layers
+        self.outlier_count_general = config.outlier_count_general
+
+        self.value_quantization_bits = config.value_quantization_bits
+        self.group_size = config.group_size
+        self.buffer_size = config.buffer_size
+
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int) -> torch.Tensor:
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
