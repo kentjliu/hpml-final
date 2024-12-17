@@ -386,7 +386,11 @@ class OPTSdpaAttention(OPTAttention):
 
     def jl_transform(self, x: torch.Tensor) -> torch.Tensor:
         jl_matrix = self.jl_matrix.to(x.device)
-        return torch.matmul(x, self.jl_matrix.T)
+        print(x.device)
+        print(jl_matrix.device)
+        result = torch.matmul(x, self.jl_matrix.T)
+        print(result.device)
+        return result
     
     def quantize_key(self, sk: torch.Tensor, original_key: torch.Tensor) -> torch.Tensor:
         """
