@@ -515,11 +515,10 @@ class OPTDecoderLayer(nn.Module):
         super().__init__()
         self.embed_dim = config.hidden_size
 
-        # self.self_attn = OPT_ATTENTION_CLASSES[config._attn_implementation](config=config, is_decoder=True)
-        self.self_attn = (
-            # OPTAttention(config=config)
-            OPTSdpaAttention(config=config)
-        )
+        self.self_attn = OPT_ATTENTION_CLASSES[config._attn_implementation](config=config, is_decoder=True)
+        # self.self_attn = (
+        #     OPTAttention(config=config)
+        # )
         self.do_layer_norm_before = config.do_layer_norm_before
         self.dropout = config.dropout
         self.activation_fn = ACT2FN[config.activation_function]
