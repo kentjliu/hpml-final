@@ -125,7 +125,7 @@ class OPTAttention(nn.Module):
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
 
         # JL Transform matrix (Gaussian Random Matrix)
-        self.jl_transform = torch.randn((config.jl_dim, self.head_dim)) / (self.head_dim ** 0.5)
+        self.jl_transform = torch.randn((self.head_dim // 2, self.head_dim)) / (self.head_dim ** 0.5)
         self.jl_dim = self.head_dim // 2 # config.jl_dim  # m: Dimension after JL Transform
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int) -> torch.Tensor:
