@@ -2,7 +2,7 @@ import torch
 from transformers import AutoTokenizer
 from datasets import load_dataset
 from tqdm import tqdm
-from model.opt_modified import OPTForCausalLM_JL
+from opt_modified import OPTForCausalLM_JL
 
 def compute_model_param_memory(model):
     total_memory = 0
