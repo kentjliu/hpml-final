@@ -25,7 +25,7 @@ def get_opt(model):
     torch.nn.init.normal_ = skip
     from model.opt_modified import OPTForCausalLM_JL
     # from transformers import OPTForCausalLM
-    model = OPTForCausalLM_JL.from_pretrained(model, torch_dtype='auto', ignore_mismatched_sizes=True)
+    model = OPTForCausalLM_JL.from_pretrained(model, torch_dtype='auto')
     model.seqlen = model.config.max_position_embeddings
     return model
 
