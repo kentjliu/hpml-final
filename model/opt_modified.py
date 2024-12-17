@@ -457,9 +457,9 @@ class OPTSdpaAttention(OPTAttention):
             value_states = torch.cat([past_values, value_states], dim=2)
 
         print(query_states.shape)
-        print(reduced_query.shape)
         # Apply JL Transform
         reduced_query = self.jl_transform(query_states)  # S @ q
+        print(reduced_query.shape)
         print("queries transformed!")
         
         print(key_states.shape)
