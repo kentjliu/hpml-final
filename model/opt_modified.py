@@ -384,13 +384,20 @@ class OPTSdpaAttention(OPTAttention):
         self.jl_matrix = torch.randn(32, 768) / (self.reduced_dim ** 0.5)
         self.is_decoder = is_decoder
 
-    def jl_transform(self, x: torch.Tensor) -> torch.Tensor:
+    def jl_transform_queries(self, x: torch.Tensor) -> torch.Tensor:
         print(x.shape)
         
         jl_matrix = self.jl_matrix.to(x.device)
         print(jl_matrix.shape)
         result = torch.matmul(x, jl_matrix.T)
-        print(result.device)
+        return result
+    
+    def jl_transform_keys(self, x: torch.Tensor) -> torch.Tensor:
+        
+        jl_matrix = torch.randn(32, 1536) / (self.reduced_dim ** 0.5)
+        jl_matrix.to(x.device)
+        print(jl_matrix.shape)
+        result = torch.matmul(x, jl_matrix.T)
         return result
     
     def quantize_key(self, sk: torch.Tensor, original_key: torch.Tensor) -> torch.Tensor:
@@ -456,14 +463,13 @@ class OPTSdpaAttention(OPTAttention):
             key_states = torch.cat([past_keys, key_states], dim=2)  # Concatenate along sequence dimension
             value_states = torch.cat([past_values, value_states], dim=2)
 
-        print(query_states.shape)
-        # Apply JL Transform
-        reduced_query = self.jl_transform(query_states)  # S @ q
-        print(reduced_query.shape)
+        # Apply JL Transform queries has 2048, 768
+        reduced_query = self.jl_transform_queries(query_states)  # S @ q
         print("queries transformed!")
         
         print(key_states.shape)
-        reduced_key = self.jl_transform(key_states)      # S @ k
+        # keys has 2048, 1536
+        reduced_key = self.jl_transform_keys(key_states)      # S @ k
 
         # Quantize the keys
         quantized_keys = self.quantize_key(reduced_key, key_states)  # sign(S @ k) * ||k||_2 / sqrt(m)
