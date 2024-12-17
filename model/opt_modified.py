@@ -386,7 +386,7 @@ class OPTSdpaAttention(OPTAttention):
         # Original dimension d = hidden_size
         self.d = config.hidden_size
         # Reduced dimension m (as per algorithm)
-        self.m = 32  # Can be adjusted
+        self.m = 384  # Can be adjusted
         
         # Draw random sketch S ∈ ℝᵐˣᵈ with i.i.d. entries S_ij ~ N(0,1)
         # Note: No need to divide by sqrt(m) as per the algorithm
