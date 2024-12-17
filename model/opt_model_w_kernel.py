@@ -296,9 +296,9 @@ class LlamaAttention_QJL(nn.Module):
             )
             kv_quant = QJLKeyQuantizer(self.qjl, self.outlier_count_general, self.buffer_size, self.group_size,
                                        self.key_quantization_bits)
-            if idx < self.initial_layers_count:
-                kv_quant = QJLKeyQuantizer(self.qjl_initial_layers, self.outlier_count_initial_layers, self.buffer_size,
-                                           self.group_size, self.key_quantization_bits_initial_layers)
+            # if idx < self.initial_layers_count:
+            #     kv_quant = QJLKeyQuantizer(self.qjl_initial_layers, self.outlier_count_initial_layers, self.buffer_size,
+            #                                self.group_size, self.key_quantization_bits_initial_layers)
 
             kv_quant.build_sketch(key_states)
 
