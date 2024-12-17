@@ -9,6 +9,8 @@ from modelutils import *
 
 from jl_transform import *
 
+from qjl_kernel import cuda_qjl_quant, cuda_qjl_score  # Import QJL functions
+
 try:
     import wandb
     has_wandb = True
@@ -67,7 +69,6 @@ def opt_sequential(model, dataloader, dev):
         except ValueError:
             pass
     layers[0] = layers[0].module
-
     layers[0] = layers[0].cpu()
     torch.cuda.empty_cache()
 
@@ -80,42 +81,73 @@ def opt_sequential(model, dataloader, dev):
         print(f'Processing layer {i} ...')
         layer = layer.to(dev)
 
-        # Find subcomponents
         subset = find_layers(layer)
 
         for name, module in subset.items():
-            if 'k_proj' in name:  # Apply QJL to keys
-                print(f'Applying QJL to {name} ...')
-                input_dim = module.weight.shape[1]  # Original input dimension (768)
-                reduced_dim = int(input_dim * args.qjl_ratio)  # Reduced dimension via QJL
+            if 'k_proj' in name:  # QJL-based key quantization
+                print(f'Quantizing and applying QJL to keys in {name} ...')
             
-                # Step 1: Apply QJL Transform to reduce dimensions
-                qjl = QJLTransform(input_dim, reduced_dim, device=dev)
-                reduced_weight = qjl.apply(module.weight.data)  # Shape: [768, reduced_dim]
+                # Clone and reshape key_states
+                key_states = module.weight.data.clone()  # Shape: [768, 768]
+                print(f"Original key_states shape: {key_states.shape}")
             
-                # Step 2: Re-expand to original dimensions
-                re_proj = torch.nn.Linear(reduced_dim, input_dim, bias=False).to(dev)
-                re_proj_weight = re_proj.weight.data  # Access linear layer's weights
+                batch_size, head_size, n_size, group_size = 1, 1, 1, key_states.shape[0]
+                emb_dim = key_states.shape[1]
+                key_states = key_states.unsqueeze(0).unsqueeze(0).unsqueeze(0)
             
-                # Ensure dtype compatibility
-                re_proj_weight = re_proj_weight.to(reduced_weight.dtype)  # Match dtype with reduced_weight
+                # Generate outlier_indices
+                outlier_counts = min(10, emb_dim)
+                abs_key_states = key_states.abs().view(batch_size, head_size, n_size, -1)
+                outlier_indices = torch.topk(abs_key_states, k=outlier_counts, dim=-1).indices.to(torch.uint8)
             
-                # Perform re-projection
-                restored_weight = torch.matmul(reduced_weight, re_proj_weight.T)  # Back to shape [768, 768]
+                # Adjust sketch_dim to align with kernel expectations
+                sketch_dim = (emb_dim // 16) * 8  # Multiple of 8
+                print(f"Adjusted sketch_dim: {sketch_dim}")
             
-                # Step 3: Update module weights with restored shape
-                module.weight.data = restored_weight
-                print(f"Restored weight shape for {name}: {module.weight.shape}")
+                rand_prj = torch.randn((sketch_dim, emb_dim), device=dev, dtype=torch.float)
+                key_quantized, _, _ = cuda_qjl_quant.qjl_quant_half_float(
+                    key_states, outlier_indices, rand_prj, outlier_sketch_dim=sketch_dim
+                )
+            
+                # Move and align quantized keys
+                key_quantized_cpu = key_quantized.squeeze(0).squeeze(0).squeeze(0).to('cpu', dtype=torch.float)
+                print(f"Quantized keys shape (CPU): {key_quantized_cpu.shape}")
+            
+                # Adjust re-projection matrix dynamically
+                sketch_dim = key_quantized_cpu.shape[-1]  # Match kernel output
+                rand_prj_cpu = torch.randn((emb_dim, sketch_dim), dtype=torch.float).to('cpu')
+                rand_prj_cpu = rand_prj_cpu.T
+                print(f"Re-projection matrix shape (CPU): {rand_prj_cpu.shape}")
+            
+                # Reproject keys
+                key_reprojected_cpu = torch.matmul(key_quantized_cpu, rand_prj_cpu)  # Shape: [768, 768]
+                print(f"Reprojected keys shape (CPU): {key_reprojected_cpu.shape}")
+            
+                # Move back to GPU
+                key_reprojected_gpu = key_reprojected_cpu.to(dev, dtype=module.weight.data.dtype)
+                module.weight.data = key_reprojected_gpu
+                print(f"Updated weights for {name}: {module.weight.shape}")
 
-            elif 'v_proj' in name:  # Quantize values per-token
-                print(f'Quantizing {name} per-token...')
-                quantizer = Quantizer()
-                quantizer.configure(args.wbits, perchannel=False, sym=False, mse=False)
-                for token_idx in range(module.weight.shape[0]):  # Per-token quantization
-                    module.weight.data[token_idx] = quantizer.quantize(module.weight.data[token_idx])
+            elif 'v_proj' in name:  # Quantize values
+                print(f'Quantizing values in {name}...')
+                value_states = module.weight.data.clone()
+                quantized_values = torch.zeros_like(value_states, dtype=value_states.dtype, device=value_states.device)
+                scale_factors = torch.zeros((value_states.shape[1],), device=value_states.device, dtype=value_states.dtype)
+        
+                for dim_idx in range(value_states.shape[1]):  # Per-channel quantization
+                    column = value_states[:, dim_idx]
+                    scale = column.abs().max() / 127.0
+                    scale_factors[dim_idx] = scale
+                    quantized_column = (column / scale).round().clamp(-127, 127).to(torch.int8)
+                    quantized_values[:, dim_idx] = quantized_column.to(value_states.dtype) * scale
+        
+                module.weight.data = quantized_values
+                print(f"Quantized values shape for {name}: {module.weight.shape}")
 
         # Forward pass through the layer
         for j in range(args.nsamples):
+            print(f"Input shape to layer {i}: {inps[j].unsqueeze(0).shape}")
+            print(f"Weight shape in {name}: {module.weight.shape}")
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
 
         layers[i] = layer.cpu()
@@ -123,7 +155,8 @@ def opt_sequential(model, dataloader, dev):
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
-    print('KV Cache QJL and Value Quantization Complete.')
+    print('QJL-based Key Quantization and Value Quantization Complete.')
+
     
 @torch.no_grad()
 def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
