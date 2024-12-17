@@ -388,7 +388,7 @@ class OPTSdpaAttention(OPTAttention):
         jl_matrix = self.jl_matrix.to(x.device)
         print(x.device)
         print(jl_matrix.device)
-        result = torch.matmul(x, self.jl_matrix.T)
+        result = torch.matmul(x, jl_matrix.T)
         print(result.device)
         return result
     
