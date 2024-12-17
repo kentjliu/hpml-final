@@ -385,10 +385,11 @@ class OPTSdpaAttention(OPTAttention):
         self.is_decoder = is_decoder
 
     def jl_transform(self, x: torch.Tensor) -> torch.Tensor:
+        print(x.shape)
+        
         jl_matrix = self.jl_matrix.to(x.device)
-        print(x.device)
-        print(jl_matrix.device)
-        result = torch.matmul(x, jl_matrix.T)
+        print(jl_matrix.shape)
+        result = torch.matmul(jl_matrix, x)
         print(result.device)
         return result
     
