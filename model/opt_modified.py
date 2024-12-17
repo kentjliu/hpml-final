@@ -249,7 +249,6 @@ class OPTAttention(nn.Module):
         attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim)
 
         attn_output = self.out_proj(attn_output)
-        print("hello there")
 
         return attn_output, attn_weights_reshaped, past_key_value
 
@@ -518,7 +517,8 @@ class OPTDecoderLayer(nn.Module):
 
         # self.self_attn = OPT_ATTENTION_CLASSES[config._attn_implementation](config=config, is_decoder=True)
         self.self_attn = (
-            OPTAttention(config=config)
+            # OPTAttention(config=config)
+            OPTSdpaAttention(config=config)
         )
         self.do_layer_norm_before = config.do_layer_norm_before
         self.dropout = config.dropout
