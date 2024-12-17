@@ -381,19 +381,19 @@ class OPTSdpaAttention(OPTAttention):
     def __init__(self, config, is_decoder):
         super().__init__(config)
         self.reduced_dim = self.head_dim // 2
-        self.jl_matrix = torch.randn(32, 768) / (self.reduced_dim ** 0.5)
+        self.jl_matrix_queries = torch.randn(32, 768) / (self.reduced_dim ** 0.5)
+        self.jl_matrix_keys = torch.randn(32, 1536) / (self.reduced_dim ** 0.5)
         self.is_decoder = is_decoder
 
     def jl_transform_queries(self, x: torch.Tensor) -> torch.Tensor:
-        jl_matrix = self.jl_matrix.to(x.device)
+        jl_matrix = self.jl_matrix_queries.to(x.device)
         print(jl_matrix.shape)
         result = torch.matmul(x, jl_matrix.T)
         return result
     
     def jl_transform_keys(self, x: torch.Tensor) -> torch.Tensor:
-        jl_matrix = torch.randn(32, 1536) / (self.reduced_dim ** 0.5)
-        jl_matrix.to('cuda')
-        print(jl_matrix.device)
+        jl_matrix = self.jl_matrix_keys.to(x.device)
+        print(jl_matrix.shape)
         result = torch.matmul(x, jl_matrix.T)
         return result
     
