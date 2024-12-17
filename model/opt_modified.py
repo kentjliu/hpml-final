@@ -124,29 +124,8 @@ class OPTAttention(nn.Module):
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=self.enable_bias)
 
-        # JL Transform matrix (Gaussian Random Matrix)
-        self.jl_transform = torch.randn((self.head_dim // 2, self.head_dim)) / (self.head_dim ** 0.5)
-        self.jl_dim = self.head_dim // 2 # config.jl_dim  # m: Dimension after JL Transform
-
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int) -> torch.Tensor:
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
-    
-    def jl_transform_and_quantize(self, key_states: torch.Tensor) -> torch.Tensor:
-        """
-        Apply JL Transform and quantize the key states.
-        Args:
-            key_states: Tensor of shape [batch_size, num_heads, seq_len, head_dim]
-
-        Returns:
-            Quantized keys: Tensor of shape [batch_size, num_heads, seq_len, jl_dim]
-        """
-        key_states = torch.einsum("bhld,md->bhlm", key_states, self.jl_transform.to(key_states.device))  # S · k
-
-        key_signs = torch.sign(key_states)  # binary {±1}
-        scaling_factor = torch.norm(key_states, dim=-1, keepdim=True) / self.jl_dim**0.5  # Scale with L2 norm
-        quantized_keys = key_signs * scaling_factor
-
-        return quantized_keys
 
     def forward(
         self,
@@ -199,18 +178,13 @@ class OPTAttention(nn.Module):
             # if encoder bi-directional self-attention `past_key_value` is always `None`
             past_key_value = (key_states, value_states)
 
-        quantized_keys = self.jl_transform_and_quantize(key_states)
-
         proj_shape = (bsz * self.num_heads, -1, self.head_dim)
         query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
-        # key_states = key_states.view(*proj_shape)
-        quantized_keys = quantized_keys.view(bsz * self.num_heads, -1, self.jl_dim)
+        key_states = key_states.view(*proj_shape)
         value_states = value_states.view(*proj_shape)
 
         src_len = key_states.size(1)
-        # attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
-        attn_weights = torch.bmm(query_states, quantized_keys.transpose(1, 2))
-
+        attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
 
         if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
             raise ValueError(
@@ -519,7 +493,7 @@ class OPTDecoderLayer(nn.Module):
         self.fc1 = nn.Linear(self.embed_dim, config.ffn_dim, bias=config.enable_bias)
         self.fc2 = nn.Linear(config.ffn_dim, self.embed_dim, bias=config.enable_bias)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim, elementwise_affine=config.layer_norm_elementwise_affine)
-        print(config._attn_implementation)
+        print("Attention implementation: ", config._attn_implementation)
 
     def forward(
         self,
