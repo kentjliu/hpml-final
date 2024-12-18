@@ -1932,3 +1932,4 @@ class QJLKeyQuantizer:
         if residual != None:
             return torch.cat([scores, residual], dim=-1)
         return scores
+    
