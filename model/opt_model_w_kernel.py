@@ -1820,6 +1820,8 @@ class QJLSketch(torch.nn.Module):
         return hash_key_inlier_simhash, hash_key_outlier_simhash
 
     def quantize(self, data, outlier_indices):
+        print(data.shape[-1])
+        print(self.dim[0])
         assert data.shape[-1] == self.dim[0], 'embedding dimension should match projection dimension'
         assert data.shape[:3] == outlier_indices.shape[:3], 'outlier indices shape should match input shape'
         key_quant, key_outliers_quant, key_outliers_norm = qjl_kernel.qjl_quant(data.contiguous(), outlier_indices.contiguous(), self.proj_dir_quant, self.dim_outlier)
