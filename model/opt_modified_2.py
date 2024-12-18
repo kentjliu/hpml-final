@@ -401,8 +401,8 @@ class OPTAttention_QJL(nn.Module):
             
             # Initialize QJL quantizer
             kv_quant = QJLKeyQuantizer(
-                self.qjl # if idx >= self.initial_layers_count else self.qjl_initial_layers,
-                self.outlier_count_general # if idx >= self.initial_layers_count else self.outlier_count_initial_layers,
+                self.qjl, # if idx >= self.initial_layers_count else self.qjl_initial_layers,
+                self.outlier_count_general, # if idx >= self.initial_layers_count else self.outlier_count_initial_layers,
                 self.buffer_size,
                 self.group_size,
                 self.key_quantization_bits # if idx >= self.initial_layers_count else self.key_quantization_bits_initial_layers
