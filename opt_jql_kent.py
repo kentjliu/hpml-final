@@ -23,7 +23,8 @@ def get_opt(model):
     from transformers import OPTForCausalLM
     model = OPTForCausalLM.from_pretrained(model, torch_dtype='auto')
     model.seqlen = model.config.max_position_embeddings
-    return model
+    # 
+    return model 
 
 # def get_opt(model_name):
 #     import torch
