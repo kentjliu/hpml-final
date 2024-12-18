@@ -175,8 +175,8 @@ class LlamaAttention_QJL(nn.Module):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
     def forward(
-            idx,
             self,
+            idx,
             hidden_states: torch.Tensor,
             attention_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,
