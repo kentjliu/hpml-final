@@ -457,6 +457,12 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
     mem_peak = torch.cuda.memory_stats()['active_bytes.all.peak'] / 1024 / 1024 / 1024
     print('MEMORY INFO')
     print(f"mem_alloc: {mem_alloc:.5f}, mem_reserved: {mem_reserve:.5f}, mem_peak: {mem_peak:.5f}")
+
+    total_params = sum(p.numel() for p in model.parameters())
+    param_memory = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024 / 1024 / 1024  # Convert to GB
+    print(f"Total Parameters: {total_params:,}")
+    print(f"Memory Taken by Parameters: {param_memory:.4f} GB")
+
     if log_wandb:
          wandb.log({f'{dataset}/perplexity': ppl.item()})
 
