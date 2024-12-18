@@ -1467,7 +1467,6 @@ class OPTDecoder(OPTPreTrainedModel):
                     position_ids,
                 )
             else:
-                print(idx)
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=causal_attention_mask,
@@ -1820,8 +1819,8 @@ class QJLSketch(torch.nn.Module):
         return hash_key_inlier_simhash, hash_key_outlier_simhash
 
     def quantize(self, data, outlier_indices):
-        print(data.shape[-1])
-        print(self.dim[0])
+        print('data shape:', data.shape[-1])
+        print('self.dim;', self.dim[0])
         assert data.shape[-1] == self.dim[0], 'embedding dimension should match projection dimension'
         assert data.shape[:3] == outlier_indices.shape[:3], 'outlier indices shape should match input shape'
         key_quant, key_outliers_quant, key_outliers_norm = qjl_kernel.qjl_quant(data.contiguous(), outlier_indices.contiguous(), self.proj_dir_quant, self.dim_outlier)
@@ -1881,6 +1880,7 @@ class QJLKeyQuantizer:
         _, outlier_indices = norms.topk(self.outliers_count, dim=-1)
         self.outlier_indices = outlier_indices.to(torch.uint8).contiguous()
 
+        print('key states shape:', key_states.shape)
         self.key_states_quant, self.key_outliers_quant, self.key_outliers_norm = self.qjl_sketch.quantize(key_states, self.outlier_indices)
 
         self.key_states_norm = torch.norm(key_states, dim=-1)
