@@ -10,6 +10,8 @@ from modelutils import *
 from jl_transform_kent import *
 from model.opt_utils_qjl import QJLSketch
 
+from typing import List, Optional, Tuple
+
 try:
     import wandb
     has_wandb = True
@@ -385,10 +387,28 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
         def __init__(self, module):
             super().__init__()
             self.module = module
-        def forward(self, inp, **kwargs):
-            inps[cache['i']] = inp
+        # def forward(self, inp, **kwargs):
+        #     inps[cache['i']] = inp
+        #     cache['i'] += 1
+        #     cache['attention_mask'] = kwargs['attention_mask']
+        #     raise ValueError
+            
+        def forward(
+            self,
+            idx,
+            hidden_states: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,
+            past_key_value: Optional[Tuple[torch.Tensor]] = None,
+            output_attentions: bool = False,
+            use_cache: bool = False,
+            **kwargs,
+        ):
+            # Capture inputs for debugging
+            inps[cache['i']] = hidden_states
             cache['i'] += 1
-            cache['attention_mask'] = kwargs['attention_mask']
+            cache['attention_mask'] = attention_mask
+            cache['idx'] = idx  # Store idx for debugging purposes if needed
             raise ValueError
     layers[0] = Catcher(layers[0])
     for i in range(nsamples):
