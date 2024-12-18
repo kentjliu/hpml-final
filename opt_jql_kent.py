@@ -7,9 +7,6 @@ from quant import *
 from sparsegpt import *
 from modelutils import *
 
-from jl_transform_kent import *
-from model.opt_utils_qjl import QJLSketch
-
 try:
     import wandb
     has_wandb = True
@@ -35,6 +32,9 @@ def get_opt(model):
 #     torch.nn.init.kaiming_uniform_ = skip
 #     torch.nn.init.uniform_ = skip
 #     torch.nn.init.normal_ = skip
+
+    # from jl_transform_kent import *
+    # from model.opt_utils_qjl import QJLSketch
 
 #     # from model.opt_modified import OPTForCausalLM_JL
 #     # model = OPTForCausalLM_JL.from_pretrained(model_name)
