@@ -458,11 +458,14 @@ class OPTDecoderLayer(nn.Module):
     def __init__(self, config: OPTConfig):
         super().__init__()
         self.embed_dim = config.hidden_size
+        # self.self_attn = OPTAttention(
+        #     embed_dim=self.embed_dim,
+        #     num_heads=config.num_attention_heads,
+        #     dropout=config.attention_dropout,
+        #     is_decoder=True,
+        # )
         self.self_attn = OPTAttention_QJL(
-            embed_dim=self.embed_dim,
-            num_heads=config.num_attention_heads,
-            dropout=config.attention_dropout,
-            is_decoder=True,
+            config=config
         )
         self.do_layer_norm_before = config.do_layer_norm_before
         self.dropout = config.dropout
