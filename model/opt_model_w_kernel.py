@@ -176,13 +176,13 @@ class LlamaAttention_QJL(nn.Module):
 
     def forward(
             self,
-            idx,
             hidden_states: torch.Tensor,
             attention_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,
             past_key_value: Optional[Tuple[torch.Tensor]] = None,
             output_attentions: bool = False,
             use_cache: bool = False,
+            idx=0,
             **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         if "padding_mask" in kwargs:
@@ -1030,7 +1030,6 @@ class OPTDecoderLayer(nn.Module):
 
     def forward(
         self,
-        idx,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         layer_head_mask: Optional[torch.Tensor] = None,
@@ -1038,6 +1037,7 @@ class OPTDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         position_ids: Optional[torch.LongTensor] = None,
+        idx=0
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -1064,13 +1064,13 @@ class OPTDecoderLayer(nn.Module):
         print('Decoder layer idx:', idx)
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            idx,
             hidden_states=hidden_states,
             past_key_value=past_key_value,
             position_ids=position_ids,
             attention_mask=attention_mask,
             layer_head_mask=layer_head_mask,
-            output_attentions=output_attentions
+            output_attentions=output_attentions,
+            idx=idx
         )
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
@@ -1469,7 +1469,6 @@ class OPTDecoder(OPTPreTrainedModel):
             else:
                 print(idx)
                 layer_outputs = decoder_layer(
-                    idx,
                     hidden_states,
                     attention_mask=causal_attention_mask,
                     position_ids=position_ids,
@@ -1477,6 +1476,7 @@ class OPTDecoder(OPTPreTrainedModel):
                     past_key_value=past_key_value,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
+                    idx=idx
                 )
 
             hidden_states = layer_outputs[0]
