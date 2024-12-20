@@ -18,7 +18,7 @@ from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_m
 from qjl_kernel.new_pack import triton_quantize_and_pack_along_last_dim
 from qjl_kernel.matmul import cuda_quantized_bmm_dynamic
 
-from models.llama2_utils_qjl import QJLSketch, QJLKeyQuantizer
+from model.llama2_utils_qjl import QJLSketch, QJLKeyQuantizer
 
 from transformers import DynamicCache
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
