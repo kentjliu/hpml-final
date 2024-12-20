@@ -1821,9 +1821,15 @@ class QJLSketch(torch.nn.Module):
     def quantize(self, data, outlier_indices):
         print('data shape:', data.shape[-1])
         print('self.dim;', self.dim[0])
-        assert data.shape[-1] == self.dim[0], 'embedding dimension should match projection dimension'
-        assert data.shape[:3] == outlier_indices.shape[:3], 'outlier indices shape should match input shape'
-        key_quant, key_outliers_quant, key_outliers_norm = qjl_kernel.qjl_quant(data.contiguous(), outlier_indices.contiguous(), self.proj_dir_quant, self.dim_outlier)
+        assert data.shape[-1] == self.dim[0], 'Embedding dimension should match projection dimension.'
+        assert data.shape[:3] == outlier_indices.shape[:3], 'Outlier indices shape should match input shape.'
+
+        key_quant, key_outliers_quant, key_outliers_norm = qjl_kernel.qjl_quant(
+            data.contiguous(),
+            outlier_indices.contiguous(),
+            self.proj_dir_quant,
+            self.dim_outlier,
+        )
         return key_quant, key_outliers_quant, key_outliers_norm
 
     def calc_score(self, query, data_quant, outlier_quant, outlier_indices, norm_data, norm_outlier):
@@ -1868,21 +1874,22 @@ class QJLKeyQuantizer:
         residual_size = self.seq_len % self.buffer_size
 
         if residual_size > 0:
-            self.key_residual = key_states[:, :, self.seq_len-residual_size:, :]
+            self.key_residual = key_states[:, :, self.seq_len - residual_size :, :]
         if residual_size == self.seq_len:
             return None
 
         num_groups = (self.seq_len - residual_size) // self.group_size
-        key_states = key_states[:, :, :self.seq_len-residual_size, :].reshape((b, h, num_groups, self.group_size, dim)).contiguous()
-        
-        norms = key_states.norm(dim=-2)
+        key_states = key_states[:, :, :self.seq_len - residual_size, :].reshape(
+            (b, h, num_groups, self.group_size, dim)
+        ).contiguous()
 
+        norms = key_states.norm(dim=-2)
         _, outlier_indices = norms.topk(self.outliers_count, dim=-1)
         self.outlier_indices = outlier_indices.to(torch.uint8).contiguous()
 
-        print('key states shape:', key_states.shape)
-        self.key_states_quant, self.key_outliers_quant, self.key_outliers_norm = self.qjl_sketch.quantize(key_states, self.outlier_indices)
-
+        self.key_states_quant, self.key_outliers_quant, self.key_outliers_norm = self.qjl_sketch.quantize(
+            key_states, self.outlier_indices
+        )
         self.key_states_norm = torch.norm(key_states, dim=-1)
 
     def _update_norms(self) -> None:
@@ -1905,15 +1912,15 @@ class QJLKeyQuantizer:
         return outlier_indices
 
     def update_sketch(self, key_states: torch.Tensor) -> None:
-        assert key_states.shape[-2] == 1, 'appending more than one embedding in the stream!'
+        assert key_states.shape[-2] == 1, 'Only one embedding can be appended in the stream!'
         self.seq_len += 1
 
-        if self.key_residual != None:
+        if self.key_residual is not None:
             self.key_residual = torch.cat([self.key_residual, key_states], dim=-2)
         else:
             self.key_residual = key_states
 
-        if self.seq_len % self.buffer_size !=0:
+        if self.seq_len % self.buffer_size != 0:
             return None
 
         b, h, _, dim = self.key_residual.shape
@@ -1924,6 +1931,7 @@ class QJLKeyQuantizer:
         self._update_norms()
 
         self.key_residual = None
+
 
     def attention_score(self, query_states: torch.Tensor) -> torch.Tensor:
         b, h, _, dim = query_states.shape
@@ -1943,4 +1951,3 @@ class QJLKeyQuantizer:
         if residual != None:
             return torch.cat([scores, residual], dim=-1)
         return scores
-    
