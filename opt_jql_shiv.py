@@ -7,16 +7,16 @@ from quant import *
 from sparsegpt import *
 from modelutils import *
 
-from jl_transform import *
+from jl_transform_kent import *
+from model.opt_utils_qjl import QJLSketch
 
-from qjl_kernel import cuda_qjl_quant, cuda_qjl_score  # Import QJL functions
+from typing import List, Optional, Tuple
 
 try:
     import wandb
     has_wandb = True
 except:
     has_wandb = False 
-
 
 def get_opt(model):
     import torch
@@ -28,21 +28,77 @@ def get_opt(model):
     from transformers import OPTForCausalLM
     model = OPTForCausalLM.from_pretrained(model, torch_dtype='auto')
     model.seqlen = model.config.max_position_embeddings
-    return model
+    # 
+    return model 
 
+def get_opt(model_name):
+    import torch
+    def skip(*args, **kwargs):
+        pass
+    torch.nn.init.kaiming_uniform_ = skip
+    torch.nn.init.uniform_ = skip
+    torch.nn.init.normal_ = skip
+
+    
+
+    # from model.opt_modified import OPTForCausalLM_JL
+    # model = OPTForCausalLM_JL.from_pretrained(model_name)
+
+    # from model.opt_modified_2 import OPTForCausalLM2
+    
+    from model.opt_shiv import OPTForCausalLM_JL_Kernel
+
+    from transformers import OPTConfig
+    device = 'cuda'
+    
+    config = OPTConfig.from_pretrained(model_name)
+    config.attention_dropout = 0.0
+    config.key_quantization_bits = 256
+    config.key_quantization_bits_initial_layers = 512
+    config.initial_layers_count = 15
+
+    config.outlier_count_general = 8
+    config.outlier_count_initial_layers = 8
+
+    config.value_quantization_bits = 2
+    config.group_size = 32
+    config.buffer_size = 128
+
+    generator = torch.Generator(device=torch.device(device))
+
+    config.qjl = QJLSketch(dim=(128, config.key_quantization_bits), dim_outlier=256, rot=True, rng=generator)
+    config.qjl_initial_layers = QJLSketch(dim=(128, config.key_quantization_bits_initial_layers), dim_outlier=128,
+                                              rot=True,
+                                              rng=generator)
+
+    config.use_flash = True
+
+    model = OPTForCausalLM_JL_Kernel.from_pretrained(
+        pretrained_model_name_or_path=model_name, 
+        torch_dtype='auto',
+        config=config,
+        cache_dir=None,
+        low_cpu_mem_usage=True,
+        device_map="auto"
+    )
+    
+    model.seqlen = model.config.max_position_embeddings
+    return model
 
 @torch.no_grad()
 def opt_sequential(model, dataloader, dev):
-    print('Starting QJL for Keys and Quantization for Values...')
+    print('Starting ...')
 
-    # Disable KV cache for pruning
     use_cache = model.config.use_cache
     model.config.use_cache = False
     layers = model.model.decoder.layers
 
-    # Move embedding and position layers to GPU
-    model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(dev)
+    model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(dev) 
     model.model.decoder.embed_positions = model.model.decoder.embed_positions.to(dev)
+    if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+        model.model.decoder.project_out = model.model.decoder.project_out.to(dev) 
+    if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+        model.model.decoder.project_in = model.model.decoder.project_in.to(dev) 
     layers[0] = layers[0].to(dev)
 
     dtype = next(iter(model.parameters())).dtype
@@ -51,7 +107,6 @@ def opt_sequential(model, dataloader, dev):
     )
     cache = {'i': 0, 'attention_mask': None}
 
-    # Capture input activations
     class Catcher(nn.Module):
         def __init__(self, module):
             super().__init__()
@@ -61,7 +116,6 @@ def opt_sequential(model, dataloader, dev):
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
             raise ValueError
-
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
         try:
@@ -69,113 +123,241 @@ def opt_sequential(model, dataloader, dev):
         except ValueError:
             pass
     layers[0] = layers[0].module
+
     layers[0] = layers[0].cpu()
+    model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.cpu()
+    model.model.decoder.embed_positions = model.model.decoder.embed_positions.cpu()
+    if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+        model.model.decoder.project_out = model.model.decoder.project_out.cpu()
+    if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+        model.model.decoder.project_in = model.model.decoder.project_in.cpu()
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
 
-    print('Processing layers sequentially...')
+    print('Ready.')
 
-    for i, layer in enumerate(layers):
-        print(f'Processing layer {i} ...')
-        layer = layer.to(dev)
+    for i in range(len(layers)):
+        layer = layers[i].to(dev)
 
         subset = find_layers(layer)
-
-        for name, module in subset.items():
-            if 'k_proj' in name:  # QJL-based key quantization
-                print(f'Quantizing and applying QJL to keys in {name} ...')
-            
-                # Clone and reshape key_states
-                key_states = module.weight.data.clone()  # Shape: [768, 768]
-                print(f"Original key_states shape: {key_states.shape}")
-            
-                batch_size, head_size, n_size, group_size = 1, 1, 1, key_states.shape[0]
-                emb_dim = key_states.shape[1]
-                key_states = key_states.unsqueeze(0).unsqueeze(0).unsqueeze(0)
-            
-                # Generate outlier_indices
-                outlier_counts = min(10, emb_dim)
-                abs_key_states = key_states.abs().view(batch_size, head_size, n_size, -1)
-                outlier_indices = torch.topk(abs_key_states, k=outlier_counts, dim=-1).indices.to(torch.uint8)
-            
-                # Adjust sketch_dim to align with kernel expectations
-                sketch_dim = (emb_dim // 16) * 8  # Multiple of 8
-                print(f"Adjusted sketch_dim: {sketch_dim}")
-            
-                rand_prj = torch.randn((sketch_dim, emb_dim), device=dev, dtype=torch.float)
-                key_quantized, _, _ = cuda_qjl_quant.qjl_quant_half_float(
-                    key_states, outlier_indices, rand_prj, outlier_sketch_dim=sketch_dim
+        
+        gpts = {}
+        for name in subset:
+            if (not (args.minlayer <= i < args.maxlayer and args.prune_only in name)) == (not args.invert):
+              continue
+            gpts[name] = SparseGPT(subset[name])
+            if args.wbits < 16:
+                gpts[name].quantizer = Quantizer()
+                gpts[name].quantizer.configure(
+                    args.wbits, perchannel=True, sym=False, mse=False
                 )
-            
-                # Move and align quantized keys
-                key_quantized_cpu = key_quantized.squeeze(0).squeeze(0).squeeze(0).to('cpu', dtype=torch.float)
-                print(f"Quantized keys shape (CPU): {key_quantized_cpu.shape}")
-            
-                # Adjust re-projection matrix dynamically
-                sketch_dim = key_quantized_cpu.shape[-1]  # Match kernel output
-                rand_prj_cpu = torch.randn((emb_dim, sketch_dim), dtype=torch.float).to('cpu')
-                rand_prj_cpu = rand_prj_cpu.T
-                print(f"Re-projection matrix shape (CPU): {rand_prj_cpu.shape}")
-            
-                # Reproject keys
-                key_reprojected_cpu = torch.matmul(key_quantized_cpu, rand_prj_cpu)  # Shape: [768, 768]
-                print(f"Reprojected keys shape (CPU): {key_reprojected_cpu.shape}")
-            
-                # Move back to GPU
-                key_reprojected_gpu = key_reprojected_cpu.to(dev, dtype=module.weight.data.dtype)
-                module.weight.data = key_reprojected_gpu
-                print(f"Updated weights for {name}: {module.weight.shape}")
 
-            elif 'v_proj' in name:  # Quantize values per-token
-                print(f'Quantizing values in {name} per-token...')
-                value_states = module.weight.data.clone()
-                quantized_values = torch.zeros_like(value_states, dtype=torch.int8, device=value_states.device)
-                scale_factors = torch.zeros((value_states.shape[0],), device=value_states.device, dtype=torch.float)  # Scale per token
-            
-                for token_idx in range(value_states.shape[0]):  # Loop over tokens (rows)
-                    row = value_states[token_idx, :]  # Extract one token embedding
-                    scale = row.abs().max() / 127.0  # Compute scale factor
-                    scale_factors[token_idx] = scale
-                    quantized_row = (row / scale).round().clamp(-127, 127).to(torch.int8)
-                    quantized_values[token_idx, :] = quantized_row
-            
-                # Dequantize back to float (optional)
-                dequantized_values = quantized_values.to(torch.float32) * scale_factors.unsqueeze(1)
-                module.weight.data = dequantized_values.to(module.weight.data.dtype)
-                print(f"Quantized values shape for {name}: {module.weight.shape}")
-
-            # elif 'v_proj' in name:  # Quantize values per-channel
-            #     print(f'Quantizing values in {name}...')
-            #     value_states = module.weight.data.clone()
-            #     quantized_values = torch.zeros_like(value_states, dtype=value_states.dtype, device=value_states.device)
-            #     scale_factors = torch.zeros((value_states.shape[1],), device=value_states.device, dtype=value_states.dtype)
-        
-            #     for dim_idx in range(value_states.shape[1]):  # Per-channel quantization
-            #         column = value_states[:, dim_idx]
-            #         scale = column.abs().max() / 127.0
-            #         scale_factors[dim_idx] = scale
-            #         quantized_column = (column / scale).round().clamp(-127, 127).to(torch.int8)
-            #         quantized_values[:, dim_idx] = quantized_column.to(value_states.dtype) * scale
-        
-            #     module.weight.data = quantized_values
-            #     print(f"Quantized values shape for {name}: {module.weight.shape}")
-
-        # Forward pass through the layer
+        def add_batch(name):
+            def tmp(_, inp, out):
+                gpts[name].add_batch(inp[0].data, out.data)
+            return tmp
+        handles = []
+        for name in gpts:
+            handles.append(subset[name].register_forward_hook(add_batch(name)))
         for j in range(args.nsamples):
-            print(f"Input shape to layer {i}: {inps[j].unsqueeze(0).shape}")
-            print(f"Weight shape in {name}: {module.weight.shape}")
+            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+        for h in handles:
+            h.remove()
+
+        for name in gpts:
+            print(i, name)
+            print('Pruning ...')
+            sparsity = args.sparsity
+            gpts[name].fasterprune(
+                sparsity, prunen=args.prunen, prunem=args.prunem, percdamp=args.percdamp, blocksize=args.blocksize
+            )
+            gpts[name].free()
+
+        for j in range(args.nsamples):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
 
         layers[i] = layer.cpu()
+        del layer
         torch.cuda.empty_cache()
+
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
-    print('QJL-based Key Quantization and Value Quantization Complete.')
 
-    
+# @torch.no_grad()
+# def opt_sequential(model, dataloader, dev):
+#     print('Starting ...')
+
+#     # Disable KV cache for pruning
+#     use_cache = model.config.use_cache
+#     model.config.use_cache = False
+#     layers = model.model.decoder.layers
+
+#     # Move embedding and position layers to GPU
+#     model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.to(dev) 
+#     model.model.decoder.embed_positions = model.model.decoder.embed_positions.to(dev)
+#     if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+#         model.model.decoder.project_out = model.model.decoder.project_out.to(dev) 
+#     if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+#         model.model.decoder.project_in = model.model.decoder.project_in.to(dev) 
+#     layers[0] = layers[0].to(dev)
+
+#     dtype = next(iter(model.parameters())).dtype
+#     inps = torch.zeros(
+#         (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
+#     )
+#     cache = {'i': 0, 'attention_mask': None}
+
+#     # Capture input activations with Catcher
+#     class Catcher(nn.Module):
+#         def __init__(self, module):
+#             super().__init__()
+#             self.module = module
+#         def forward(self, inp, **kwargs):
+#             inps[cache['i']] = inp
+#             cache['i'] += 1
+#             cache['attention_mask'] = kwargs['attention_mask']
+#             raise ValueError
+#     layers[0] = Catcher(layers[0])
+#     for batch in dataloader:
+#         try:
+#             model(batch[0].to(dev))
+#         except ValueError:
+#             pass
+#     layers[0] = layers[0].module
+
+#     # Move embedding layers back to CPU after capturing inputs
+#     layers[0] = layers[0].cpu()
+#     model.model.decoder.embed_tokens = model.model.decoder.embed_tokens.cpu()
+#     model.model.decoder.embed_positions = model.model.decoder.embed_positions.cpu()
+#     if hasattr(model.model.decoder, 'project_out') and model.model.decoder.project_out:
+#         model.model.decoder.project_out = model.model.decoder.project_out.cpu()
+#     if hasattr(model.model.decoder, 'project_in') and model.model.decoder.project_in:
+#         model.model.decoder.project_in = model.model.decoder.project_in.cpu()
+#     torch.cuda.empty_cache()
+
+#     outs = torch.zeros_like(inps)
+#     attention_mask = cache['attention_mask']
+
+#     print('Ready for layer-wise processing.')
+
+#     # Process each layer sequentially
+#     for i in range(len(layers)):
+#         print(f'Processing layer {i} ...')
+#         layer = layers[i].to(dev)
+
+#         # Find subcomponents of the layer for pruning
+#         subset = find_layers(layer)
+        
+#         gpts = {}
+#         for name in subset:
+#             if (not (args.minlayer <= i < args.maxlayer and args.prune_only in name)) == (not args.invert):
+#               continue
+#             gpts[name] = SparseGPT(subset[name])
+#             # if args.wbits < 16:
+#             #     gpts[name].quantizer = Quantizer()
+#             #     gpts[name].quantizer.configure(
+#             #         args.wbits, perchannel=True, sym=False, mse=False
+#             #     )
+
+#         def add_batch(name):
+#             def tmp(_, inp, out):
+#                 gpts[name].add_batch(inp[0].data, out.data)
+#             return tmp
+#         handles = []
+#         for name in gpts:
+#             handles.append(subset[name].register_forward_hook(add_batch(name)))
+#         for j in range(args.nsamples):
+#             # Validate and adjust input sequence length dynamically
+#             if inps.shape[1] > model.seqlen:
+#                 inps = inps[:, :model.seqlen, :]
+#             elif inps.shape[1] < model.seqlen:
+#                 padding = torch.zeros(
+#                     (inps.shape[0], model.seqlen - inps.shape[1], inps.shape[2]),
+#                     device=dev, dtype=inps.dtype
+#                 )
+#                 inps = torch.cat((inps, padding), dim=1)
+
+#             # Validate hidden size
+#             if inps.shape[-1] != model.config.hidden_size:
+#                 raise ValueError(f"Input hidden size {inps.shape[-1]} does not match model's expected size {model.config.hidden_size}")
+            
+#             # Forward pass for the current sample
+#             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+#         for h in handles:
+#             h.remove()
+
+#         # Prune and optionally quantize weights
+#         for name in gpts:
+#             print(f'Layer {i}, component {name}: Pruning ...')
+#             # sparsity = args.sparsity
+#             # gpts[name].fasterprune(
+#             #     sparsity, prunen=args.prunen, prunem=args.prunem, percdamp=args.percdamp, blocksize=args.blocksize
+#             # )
+
+#             # Apply QJL to the weight matrix
+#             if args.qjl_ratio > 0:
+#                 print(f'Layer {i}, component {name}: Applying QJL Transform ...')
+
+#                 if 'fc1' in name or 'fc2' in name:
+#                     print(f"Skipping QJL for {name}")
+#                     continue
+
+#                 if 'k_proj' in name or 'q_proj' in name or 'v_proj' in name:
+#                     input_dim = subset[name].weight.data.shape[1]
+#                     output_dim = int(input_dim * args.qjl_ratio)
+
+#                     # Adjust QJL output_dim to match expected downstream dimensions
+#                     expected_output_dim = subset[name].weight.shape[0]
+#                     if output_dim != expected_output_dim:
+#                         print(f"Adjusting QJL output_dim from {output_dim} to {expected_output_dim}")
+#                         output_dim = expected_output_dim
+
+#                     # Apply JL Transform
+#                     qjl = QJLTransform(input_dim, output_dim, device=dev)
+#                     reduced_weight = qjl.apply(subset[name].weight.data)
+
+#                     # Debugging reduced dimensions
+#                     print(f"Reduced weight shape: {reduced_weight.shape}, Expected shape: {subset[name].weight.shape}")
+
+#                     # Quantize keys with binary approximation
+#                     if 'k_proj' in name:
+#                         print(f'Layer {i}, component {name}: Quantizing Keys ...')
+#                         quantized_weight = qjl.quantize(reduced_weight)
+
+#                     # Quantize values (v_proj) using per-token quantization
+#                     elif 'v_proj' in name:
+#                         print(f'Layer {i}, component {name}: Per-token Quantization for Values ...')
+#                         quantizer = Quantizer()
+#                         quantizer.configure(args.wbits, perchannel=True, sym=False, mse=False)
+#                         quantized_weight = quantizer.quantize(reduced_weight)
+
+#                     else:  # Queries are projected without further quantization
+#                         quantized_weight = reduced_weight
+
+#                     # Update weight matrix with transformed weights
+#                     subset[name].weight.data = quantized_weight
+
+#             gpts[name].free()
+
+#         # Forward pass to validate the layer
+#         for j in range(args.nsamples):
+#             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+
+#         # Move the layer back to CPU
+#         layers[i] = layer.cpu()
+#         del layer
+#         torch.cuda.empty_cache()
+
+#         # Update inputs for the next layer
+#         inps, outs = outs, inps
+
+#     # Restore model cache settings
+#     model.config.use_cache = use_cache
+#     print('Pruning and quantization complete.')
+
 @torch.no_grad()
 def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
     print('Evaluating ...')
@@ -274,6 +456,18 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
         nlls.append(neg_log_likelihood)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
     print(f"Perplexity: {ppl.item():3f}")
+
+    mem_alloc = torch.cuda.memory_allocated() / 1024 / 1024 / 1024
+    mem_reserve = torch.cuda.memory_reserved() / 1024 / 1024 / 1024
+    mem_peak = torch.cuda.memory_stats()['active_bytes.all.peak'] / 1024 / 1024 / 1024
+    print('MEMORY INFO')
+    print(f"mem_alloc: {mem_alloc:.5f}, mem_reserved: {mem_reserve:.5f}, mem_peak: {mem_peak:.5f}")
+
+    total_params = sum(p.numel() for p in model.parameters())
+    param_memory = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024 / 1024 / 1024  # Convert to GB
+    print(f"Total Parameters: {total_params:,}")
+    print(f"Memory Taken by Parameters: {param_memory:.4f} GB")
+
     if log_wandb:
          wandb.log({f'{dataset}/perplexity': ppl.item()})
 
