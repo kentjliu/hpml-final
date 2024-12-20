@@ -64,13 +64,17 @@ def get_opt(model_name):
     config.group_size = 32
     config.buffer_size = 128
 
-    generator = torch.Generator(device=torch.device(device))
 
-    config.qjl = QJLSketch(dim=(128, config.key_quantization_bits), dim_outlier=256, rot=True, rng=generator)
-    config.qjl_initial_layers = QJLSketch(dim=(128, config.key_quantization_bits_initial_layers), dim_outlier=128,
+    head_dim = config.hidden_size // config.num_attention_heads
+
+    generator = torch.Generator(device=torch.device(device))
+    print('hi man')
+    config.qjl = QJLSketch(dim=(head_dim, config.key_quantization_bits), dim_outlier=256, rot=True, rng=generator)
+    print('hey man')
+    config.qjl_initial_layers = QJLSketch(dim=(head_dim, config.key_quantization_bits_initial_layers), dim_outlier=128,
                                               rot=True,
                                               rng=generator)
-
+    print('hello man')
     config.use_flash = True
 
     model = OPTForCausalLM_JL_Kernel.from_pretrained(
