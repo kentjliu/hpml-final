@@ -198,6 +198,8 @@ def parse_args(args=None):
     parser.add_argument('--dataset_name', type=str, required=True)
     parser.add_argument('--n_data', type=int, default=150)
     parser.add_argument('--sparse', type=bool, default=True)
+    parser.add_argument('--sparsity', type=float, default=0.5)
+    parser.add_argument('--blocksize', type=int, default=128)
     return parser.parse_args(args)
 
 
@@ -299,13 +301,12 @@ def llama_sequential(model, dataloader, dev, sparsity=0.5, blocksize=128):
             for name in subset:
                 print(i, name)
                 print("Pruning ...")
-                sparsity = 0.5
                 gpts[name].fasterprune(
                     sparsity,
                     prunen=0,
                     prunem=0,
                     percdamp=0.01,
-                    blocksize=128,
+                    blocksize,
                 )
                 gpts[name].free()
                 
@@ -455,7 +456,7 @@ def main(args):
     
     if args.sparse:
         tick = time.time()
-        llama_sequential(model, dataloader, DEV)
+        llama_sequential(model, dataloader, DEV, sparsity=args.sparsity, blocksize=args.blocksize)
         for n, p in model.named_parameters():
             print(n, torch.mean((p == 0).float()))
             if 'down_proj' in n:
