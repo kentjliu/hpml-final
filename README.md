@@ -1,4 +1,5 @@
 # hpml-final
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kentjliu/hpml-final/blob/main/demo.ipynb)
 
 ## Description
 SparseQJL is a large language model compression approach which leverages mathematical properties of the 
