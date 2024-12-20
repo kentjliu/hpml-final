@@ -1037,7 +1037,7 @@ class OPTDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         position_ids: Optional[torch.LongTensor] = None,
-        idx=i # was 0 before? 
+        idx=0 # was 0 before? 
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:

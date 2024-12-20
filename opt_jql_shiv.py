@@ -166,7 +166,7 @@ def opt_sequential(model, dataloader, dev):
         for name in gpts:
             handles.append(subset[name].register_forward_hook(add_batch(name)))
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, idx=i)[0]
         for h in handles:
             h.remove()
 
@@ -180,7 +180,7 @@ def opt_sequential(model, dataloader, dev):
             gpts[name].free()
 
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, idx=i)[0]
 
         layers[i] = layer.cpu()
         del layer
@@ -189,6 +189,7 @@ def opt_sequential(model, dataloader, dev):
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
+
 
 # @torch.no_grad()
 # def opt_sequential(model, dataloader, dev):
@@ -361,7 +362,6 @@ def opt_sequential(model, dataloader, dev):
 #     # Restore model cache settings
 #     model.config.use_cache = use_cache
 #     print('Pruning and quantization complete.')
-
 @torch.no_grad()
 def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
     print('Evaluating ...')
@@ -429,7 +429,7 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
                 W.data[torch.abs(W.data) <= thresh] = 0
 
         for j in range(nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, idx=i)[0]
         layers[i] = layer.cpu()
         del layer
         torch.cuda.empty_cache()
@@ -476,6 +476,7 @@ def opt_eval(model, testenc, dev, dataset: str, log_wandb: bool = False):
          wandb.log({f'{dataset}/perplexity': ppl.item()})
 
     model.config.use_cache = use_cache
+
 
 
 if __name__ == '__main__':
