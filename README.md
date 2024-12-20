@@ -24,5 +24,7 @@ python llama_sparseqjl.py --model_name "meta-llama/Llama-2-7b-hf" \
     --seed 42 \
     --dataset_name [dataset_name] \
     --n_data 150 \
-    --sparse True
+    --sparse True \
+    --sparsity 0.5 \
+    --blocksize 128
 ```
