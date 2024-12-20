@@ -32,7 +32,7 @@ def set_seed(seed):
     torch.random.manual_seed(seed)
     
 def get_tokenizer(model):
-    tokenizer = AutoTokenizer.from_pretrained(model)
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
     tokenizer.pad_token = tokenizer.eos_token  # Explicitly set pad_token
     return tokenizer
 
