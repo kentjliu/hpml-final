@@ -8,8 +8,8 @@ import json
 from tqdm import tqdm
 from transformers import LlamaConfig, AutoTokenizer
 from datasets import load_dataset
-from models.llama2_utils_qjl import QJLSketch
-from models.llama2_qjl import LlamaForCausalLM_QJL
+from model.llama2_utils_qjl import QJLSketch
+from model.llama2_qjl import LlamaForCausalLM_QJL
 
 import torch.nn as nn
 
@@ -302,11 +302,11 @@ def llama_sequential(model, dataloader, dev, sparsity=0.5, blocksize=128):
                 print(i, name)
                 print("Pruning ...")
                 gpts[name].fasterprune(
-                    sparsity,
+                    sparsity=sparsity,
                     prunen=0,
                     prunem=0,
                     percdamp=0.01,
-                    blocksize,
+                    blocksize=blocksize
                 )
                 gpts[name].free()
                 
