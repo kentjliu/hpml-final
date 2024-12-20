@@ -3,8 +3,7 @@
 ## Installation
 Set up the QJL kernel:
 ```
-cd qjl_kernel
-python setup.py build_ext --inplace
+python qjl_kernel/setup.py build_ext --inplace
 ```
 
 ### Usage
