@@ -184,7 +184,7 @@ def setup_model_and_tokenizer(
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_name', type=str, default="lmsys/longchat-7b-v1.5-32k")
+    parser.add_argument('--model_name', type=str, default="meta-llama/Llama-2-7b-hf")
     parser.add_argument('--dtype', type=str, default="float16", choices=["float16", "float32"])
     parser.add_argument('--key_quantization_bits', type=int, default=256)
     parser.add_argument('--key_quantization_bits_initial_layers', type=int, default=512)
@@ -195,7 +195,6 @@ def parse_args(args=None):
     parser.add_argument('--group_size', type=int, default=32)
     parser.add_argument('--buffer_size', type=int, default=128)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--dataset_name', type=str, required=True)
     parser.add_argument('--n_data', type=int, default=150)
     parser.add_argument('--sparse', type=bool, default=True)
     parser.add_argument('--sparsity', type=float, default=0.5)
