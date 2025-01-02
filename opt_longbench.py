@@ -99,7 +99,7 @@ def evaluate_model(
             num_beams=1,
             do_sample=False,
             temperature=1.0,
-        )[0]
+        )[0].to(device)
         pred = tokenizer.decode(output[context_length:], skip_special_tokens=True)
 
         ground_truths = json_obj['answers']
