@@ -8,7 +8,7 @@ from quant import *
 from sparsegpt import *
 from modelutils import *
 import argparse
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
 from eval_long_bench import dataset2metric
 from fastchat.model import get_conversation_template
 from tqdm import tqdm
@@ -43,17 +43,37 @@ def build_chat(prompt, model_name):
     return prompt
 
 def setup_model_and_tokenizer(model_name, dtype='auto'):
-    import torch
-    def skip(*args, **kwargs):
-        pass
-    torch.nn.init.kaiming_uniform_ = skip
-    torch.nn.init.uniform_ = skip
-    torch.nn.init.normal_ = skip
-    from transformers import OPTForCausalLM
-    model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
-    model.seqlen = model.config.max_position_embeddings
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    return model, tokenizer
+    # import torch
+    # def skip(*args, **kwargs):
+    #     pass
+    # torch.nn.init.kaiming_uniform_ = skip
+    # torch.nn.init.uniform_ = skip
+    # torch.nn.init.normal_ = skip
+    # from transformers import OPTForCausalLM
+    # model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
+    # model.seqlen = model.config.max_position_embeddings
+    # tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    # return model, tokenizer
+
+    config = LlamaConfig.from_pretrained(model_name)
+    config._flash_attn_2_enabled = True
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        use_fast=False,
+        trust_remote_code=True,
+        tokenizer_type='llama'
+    )
+
+    model_qjl = LlamaForCausalLM.from_pretrained(
+        pretrained_model_name_or_path=model_name,
+        config=config,
+        cache_dir=None,
+        torch_dtype=dtype,
+        low_cpu_mem_usage=True,
+        device_map="auto"
+    )
+
+    return model_qjl, tokenizer
 
 
 def evaluate_model(
