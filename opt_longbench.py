@@ -42,7 +42,7 @@ def build_chat(prompt, model_name):
         raise NotImplementedError
     return prompt
 
-def setup_model_and_tokenizer(model, dtype='auto'):
+def setup_model_and_tokenizer(model_name, dtype='auto'):
     import torch
     def skip(*args, **kwargs):
         pass
@@ -50,9 +50,9 @@ def setup_model_and_tokenizer(model, dtype='auto'):
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
     from transformers import OPTForCausalLM
-    model = OPTForCausalLM.from_pretrained(model, torch_dtype=dtype)
+    model = OPTForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
     model.seqlen = model.config.max_position_embeddings
-    tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     return model, tokenizer
 
 
